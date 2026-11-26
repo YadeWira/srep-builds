@@ -665,6 +665,27 @@ bool crc32c()  /* arm64 CRC instructions: optional in ARMv8.0, always on Apple *
             print("   ! modern CLI: PATTERN NOT FOUND")
             ok = False
 
+    # --- 19. macOS ---------------------------------------------------------------
+    # 3.95 builds on macOS (Apple Silicon, clang). Two Linux-isms stopped it:
+    # <malloc.h> does not exist there (malloc is in <stdlib.h>), and
+    # getrusage(RUSAGE_THREAD) is Linux-only; the per-thread CPU time it feeds
+    # is only shown in statistics, so the process figure stands in.
+    common = os.path.join(root, "Compression/Common.cpp")
+    ok &= apply(
+        srep,
+        "macOS: no <malloc.h>",
+        "#include <malloc.h>\n",
+        "#ifdef __APPLE__   /* ytool patch: macOS has no <malloc.h> */\n#include <stdlib.h>\n#else\n#include <malloc.h>\n#endif\n",
+        marker="macOS has no <malloc.h>",
+    )
+    ok &= apply(
+        common,
+        "macOS: no RUSAGE_THREAD",
+        "  int res = getrusage (RUSAGE_THREAD, &usage);",
+        "#ifdef RUSAGE_THREAD   /* ytool patch: Linux-only; the process time elsewhere */\n  int res = getrusage (RUSAGE_THREAD, &usage);\n#else\n  int res = getrusage (RUSAGE_SELF, &usage);\n#endif",
+        marker="ytool patch: Linux-only; the process time",
+    )
+
     # --- 14. Version ------------------------------------------------------------
     ok &= apply(
         srep,

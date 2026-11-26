@@ -108,6 +108,42 @@ outputs equal), so the two builds pick different, equally valid matches. Each de
 the other's archives (tested). Making them identical would mean auditing the whole
 match finder, for no gain in correctness, so it is left as it is.
 
+## 6. arm64 (3.95)
+
+**VMAC took arm64 for big-endian.** The first arm64 build round-tripped on its own,
+but its archives failed on x86 and x86's failed on arm64 ("checksum ... is not the
+same"), with the default `-hash=vmac` only; md5, sha1 and no hash crossed.
+`VMAC_ARCH_BIG_ENDIAN` is "none of x86_64, i386, x64, ARMEL, MIPSEL", and arm64
+defines `__AARCH64EL__`, not `__ARMEL__`. Added to the list (patch 17), together
+with the strict-aliasing pragma, since arm64 takes the same portable-C path that
+was miscompiled on i386.
+
+**CRC32-C.** `hashes.cpp` emitted the x86 `crc32b` instruction on any GCC target
+and did not compile on arm64. arm64's `__crc32cb` is the same CRC32-C byte step,
+so it is used there (patch 16), detected at run time on Linux, always present on
+Apple Silicon. With it, `-m1`'s content-defined chunks fall in the same places,
+and Linux arm64 and x86-64 archives are byte-identical with the same seed (48 MB,
+`-m0f`..`-m5f`, `-m3`, `-m3o`).
+
+## 7. Windows XP (3.95)
+
+GCC 14's mingw libgcc, in its default win32 thread model, imports Vista's
+condition variables and `GetThreadId` (`gthr-win32-cond.o`, `gthr-win32.o`), so
+XP refused `srep-x86.exe` with `0xC0000139` before `main`. The x86 build now uses
+mingw's posix variant (winpthreads, linked statically); its imports are all in
+XP's kernel32. Checked on real XP: every method, sha1, and pipes. `tests/run.sh`
+fails if the import table gains a post-XP function.
+
+## 8. The command line (3.95)
+
+The old CLI showed help only with no file names and a terminal on both ends; `-h`,
+`--help` and `--version` were invalid options; and compressing a `.srep` without
+`-d` compressed it again, with exit 0. Patch 18 adds `-h`/`--help`/`-?`,
+`--version`/`-V`, `--decompress`/`--info`, the help in `build/help.c` (grouped,
+with examples and exit codes), a hint after "Invalid option", and refuses to
+compress a file that starts with srep's signature unless `--recompress` is given.
+It changes no existing option.
+
 ## Limitation that remains, and is not fixable from here
 
 `-m1`, `-m2` and the other suffixes-less methods write an **index-LZ** footer (format

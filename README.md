@@ -1,9 +1,27 @@
 # srep-builds
 
 Personal builds of **SREP**, the huge-dictionary LZ77 preprocessor by **Bulat
-Ziganshin**: version **3.94**, which is SREP 3.93a beta (October 11, 2014) with
-the fixes listed below. Built for [ytool](https://github.com/YadeWira/ytool),
-which runs srep as an external program for `-dd1`..`-dd5`.
+Ziganshin**: version **3.95**, which is SREP 3.93a beta (October 11, 2014) with
+fixes, more platforms and a newer command line. The archive format is unchanged.
+Built for [ytool](https://github.com/YadeWira/ytool), which runs srep as an
+external program for `-dd1`..`-dd5`.
+
+| Component | Status |
+|---|---|
+| CI | [![CI][ciBadge]][ciLink] |
+| Latest release | [![Release][relBadge]][relLink] |
+| Linux x86-64 | built and tested in CI |
+| Linux x86 | built and tested in CI |
+| Linux arm64 | built and tested in CI (native arm64 runner) |
+| Windows x64 | built in CI, tested under wine; real Windows 7 |
+| Windows x86 | built in CI, tested under wine; real Windows XP and 7 |
+| macOS arm64 | built and tested in CI (Apple Silicon runner) |
+
+```sh
+srep -m3f big.tar big.tar.srep      # compress
+srep -d big.tar.srep big.tar        # decompress, byte for byte
+srep --help
+```
 
 ## Rights
 
@@ -28,67 +46,91 @@ The support code bundled in the tree has its own, permissive terms: VMAC/VHASH
 domain; LibTomCrypt is "free for all purposes". The Win32 threading backend in
 `build/win32-threads/` is adapted from the public-domain LZMA SDK.
 
+## Downloads
+
+[Releases](https://github.com/YadeWira/srep-builds/releases):
+
+| File | Platform |
+|---|---|
+| `srep64` | Linux x86-64, static |
+| `srep32` | Linux x86, static |
+| `srep-arm64` | Linux arm64, static |
+| `srep.exe` | Windows x64, Windows 7 or later |
+| `srep-x86.exe` | Windows x86, Windows XP or later |
+| `srep-macos` | macOS arm64 (Apple Silicon) |
+
+For ytool, put it next to the ytool binary: `srep64` (or `srep`) on Linux,
+`srep.exe` on Windows (rename `srep-x86.exe` for the x86 package).
+
+With the same input and seed, Linux x86-64, Linux arm64 and Windows x64 write the
+same bytes (measured on 48 MB, `-m1f`..`-m5f`); the x86 builds do too except for
+`-m3`/`-m4` above roughly 16 MB, where they pick other, equally valid matches.
+Every build decodes every other build's archives. 32-bit builds
+reading stdin need `-s<size>`: without it srep assumes 25 GB and asks for more
+memory than a 32-bit process has.
+
+## What changed since 3.93a
+
+**3.95**
+- Builds for Linux arm64, macOS arm64 and Windows XP (x86).
+- arm64: VMAC took arm64 for big-endian, so `-hash=vmac` (the default) archives
+  did not cross between arm64 and x86; the CRC32-C chunking step now uses
+  arm64's own instruction, so archives are the same bytes on both.
+- Command line: `-h`/`--help`, `--version`, `--decompress`/`--info`, a grouped
+  help with examples and exit codes, a hint after an invalid option, and
+  compressing a file that already is a srep archive is refused (`--recompress`
+  forces it). Every old option works as before.
+
+**3.94**
+- Archives that did not decompress, with exit 0 (`-m3f`..`-m5f`): a block's
+  checksum was copied after the background thread could overwrite it.
+- `-hash=sha1` archives from Linux x86 failed their own checksum; Linux x86 did
+  not compile.
+- `-vmfile=`/`-vmblock=` were rejected, `-hash=` with no name disabled checksums,
+  `-s1e6` was read as a progress interval, a spill that cannot progress hung.
+
+Details and measurements: `CHANGELOG.md`, `TOOL-FIXES.md`,
+`OMEGA-IMPROVEMENTS.md`.
+
 ## What this is
 
 - The source: the last known commit of the former Mercurial repository, as
   repackaged at [Intensity/srep](https://github.com/Intensity/srep) (`48f4b97`).
   That repository's own README is kept as `UPSTREAM-README.md`.
-- `build/`: the scripts used to build it for
-  [ytool](https://github.com/YadeWira/ytool), which runs srep as an external
-  program for `-dd<N>` (external deduplication). ytool does not include srep and
-  builds without it.
 - `build/patch_srep.py`: patches applied to a scratch copy at build time, each
-  for a measured failure. The tree itself stays as upstream left it, except
-  patches 1-3, which it already carries in place (`hashes.cpp`, `vmac.c`).
-  Rationale for each: `TOOL-FIXES.md` (found here) and `OMEGA-IMPROVEMENTS.md`
-  (taken from omega-srep's history).
-- `tests/run.sh`: the test suite (below).
+  for a measured failure; the tree stays as upstream left it, except patches
+  1-3, which it carries in place. `build/help.c` is the new help text.
+- `tests/run.sh`: the test suite.
 
-## What 3.94 fixes
-
-The archive format is unchanged: 3.93a reads what 3.94 writes and the other way
-round. With a fixed seed, the 64-bit builds write the same bytes as before
-wherever 3.93a was not broken.
-
-- **Archives that do not decompress, with exit 0** (`-m3f`..`-m5f`, every
-  Future-LZ/Index-LZ mode): a block's checksum was copied after the background
-  thread could already overwrite it. Rare on a normal run; with the race window
-  held open, 140 of 140 archives failed. Fixed (patch 8).
-- **`-hash=sha1` on Linux i686**: every archive failed its own checksum, because a
-  patch meant to fix it only printed a note. Fixed for real (patch 7).
-- **Linux i686 did not compile** (VMAC's SSE2 asm, patch 4 as first written).
-- `-vmfile=` and `-vmblock=` were unreachable (`-v` matched first); `-hash=` with
-  no name turned checksums off silently; `-s1e6` became a 11-day progress
-  interval; a decode that runs out of memory while spilling could hang instead
-  of failing (patches 9-13).
-- New build: **Linux i686** (`srep32`), next to Linux x86-64 and Windows x64/x86.
 ## Build
 
 ```bash
-bash build/build.sh            # dist/srep64          (Linux x86-64; make + g++/clang++)
-bash build/build.sh linux32    # dist/srep32          (Linux i686; g++ -m32 multilib)
-bash build/build.sh win64      # dist/srep.exe        (x86_64-w64-mingw32-g++)
-bash build/build.sh win32      # dist/srep-x86.exe    (i686-w64-mingw32-g++)
-bash build/build.sh all
+bash build/build.sh            # dist/srep64        Linux x86-64 (g++/clang++)
+bash build/build.sh linux32    # dist/srep32        Linux x86 (g++ -m32 multilib)
+bash build/build.sh arm64      # dist/srep-arm64    Linux arm64 (native, or aarch64-linux-gnu-g++)
+bash build/build.sh macos      # dist/srep-macos    macOS (on a Mac, clang)
+bash build/build.sh win64      # dist/srep.exe      Windows x64 (x86_64-w64-mingw32-g++)
+bash build/build.sh win32      # dist/srep-x86.exe  Windows x86 (i686-w64-mingw32-g++-posix)
+bash build/build.sh all        # everything but macos
 ```
-
-Decode needs the explicit `-d`: without it srep re-compresses the compressed file
-and exits 0.
 
 ## Test
 
 ```bash
-bash tests/run.sh          # everything (about 30 s; wine for the Windows builds)
-bash tests/run.sh quick    # without the race probe and the wine runs
+bash tests/run.sh          # everything (wine and qemu-aarch64 when present)
+bash tests/run.sh quick    # without the race probe, wine and qemu
+SREP=path/to/srep bash tests/run.sh    # test that binary as the main build
 ```
 
 Round-trips of every method (`-m0`..`-m5`) in every container (`""`, `f`, `o`)
-on seven inputs, through files and through pipes as ytool uses it; every hash;
-small blocks and many threads; the same seed giving the same archive; damaged
-and truncated archives failing with a non-zero exit; the option fixes; the
-32-bit build against the 64-bit one; the Windows builds under wine, both ways;
-and a probe build that holds the digest race open (patch 8), where every archive
-must still decode. 224 checks with every build present.
+on seven inputs, through files and through pipes; every hash; small blocks and
+many threads; the same seed giving the same archive; damaged and truncated
+archives failing with a non-zero exit; the option and command-line fixes; the
+32-bit, arm64 and Windows builds against the 64-bit one, both ways; the XP
+import table; and a probe build that holds the digest race open. 250 checks with
+every build present.
 
-The Windows builds were also run on real Windows 7 (x64 and x86), alone and
-under ytool (`-dd1`, `-dd3`, `-dd5`).
+[ciBadge]: https://github.com/YadeWira/srep-builds/actions/workflows/ci.yml/badge.svg "Continuous Integration"
+[ciLink]: https://github.com/YadeWira/srep-builds/actions/workflows/ci.yml
+[relBadge]: https://img.shields.io/github/v/release/YadeWira/srep-builds "Latest release"
+[relLink]: https://github.com/YadeWira/srep-builds/releases/latest
