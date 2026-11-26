@@ -18,8 +18,14 @@ pass=0; fail=0
 ok()  { pass=$((pass+1)); }
 bad() { fail=$((fail+1)); echo "   FAIL: $*"; }
 
-[ -x "$DIST/srep64" ] || bash build/build.sh linux >/dev/null || { echo "build failed"; exit 3; }
-S64="$DIST/srep64"
+# SREP=<binary> tests that one as the main build (the CI runs each platform's
+# native binary that way); otherwise dist/srep64, built if missing.
+if [ -n "${SREP:-}" ]; then
+  S64="$SREP"
+else
+  [ -x "$DIST/srep64" ] || bash build/build.sh linux >/dev/null || { echo "build failed"; exit 3; }
+  S64="$DIST/srep64"
+fi
 S32=""; [ -x "$DIST/srep32" ] && S32="$DIST/srep32"
 WINE=""; command -v wine >/dev/null && WINE=wine
 export WINEDEBUG=-all
@@ -120,6 +126,19 @@ if [ -n "$S32" ]; then
   for m in -m1f -m3f -m4f -m5f; do rt "$S64" "$S32" "$m" dups12m.bin; done
 fi
 
+QEMU=""; command -v qemu-aarch64 >/dev/null && QEMU=qemu-aarch64
+if [ -n "$QEMU" ] && [ -f "$DIST/srep-arm64" ] && [ "$(uname -m)" != aarch64 ] && [ "$QUICK" != quick ]; then
+  echo "== srep-arm64 under qemu (patches 16, 17)"
+  for m in -m0f -m1f -m3f -m5f -m3 -m3o; do
+    rt "$QEMU $DIST/srep-arm64" "$S64" "$m" dups12m.bin
+    rt "$S64" "$QEMU $DIST/srep-arm64" "$m" dups12m.bin
+    # arm64 has the same CRC32-C step and VMAC as x86-64: same bytes.
+    SREP_SEED_HEX=$SEED $QEMU "$DIST/srep-arm64" $m "$W/dups12m.bin" "$W/ar.s" >/dev/null 2>&1
+    SREP_SEED_HEX=$SEED $S64 $m "$W/dups12m.bin" "$W/xr.s" >/dev/null 2>&1
+    cmp -s "$W/ar.s" "$W/xr.s" && ok || bad "$m: arm64 and x86-64 archives differ (fixed seed)"
+  done
+fi
+
 if [ -n "$WINE" ] && [ "$QUICK" != quick ]; then
   for exe in srep.exe srep-x86.exe; do
     [ -f "$DIST/$exe" ] || continue
@@ -136,7 +155,14 @@ if [ "$QUICK" != quick ]; then
   echo "== digest race (patch 8): a probe build holds the window open"
   P="$W/probe"; mkdir -p "$P" && cp -a "$ROOT/Makefile" "$ROOT/Compression" "$P/"
   python3 build/patch_srep.py "$P" >/dev/null
-  if ( cd "$P" && make OPTIMISATION="-O3 -msse2 -DSREP_RACE_PROBE -include unistd.h" >/dev/null 2>&1 ); then
+  PO="-O3 -DSREP_RACE_PROBE -include unistd.h"
+  case "$(uname -m)" in x86_64|i?86) PO="$PO -msse2" ;; esac
+  if [ "$(uname -s)" = Darwin ]; then
+    MK=(make CXX=clang++ STATIC= DEBUGGING= VERBOSITY= LDFLAGS="-lpthread -lc++" OPTIMISATION="$PO")
+  else
+    MK=(make OPTIMISATION="$PO")
+  fi
+  if ( cd "$P" && "${MK[@]}" >/dev/null 2>&1 ); then
     n=0
     for i in $(seq 1 40); do
       "$P/bin/srep" -m5f -b64k -t16 "$W/unit300k.bin" "$W/race.s" >/dev/null 2>&1

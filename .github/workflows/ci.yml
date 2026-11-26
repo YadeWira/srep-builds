@@ -2,16 +2,58 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, srep-395 ]
   pull_request:
     branches: [ main ]
 
+# Each platform builds natively where a runner exists and runs tests/run.sh on
+# its own binary. Windows is cross-built with mingw (as the release is) and
+# tested under wine.
 jobs:
-  build:
+  linux-x64:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - name: Build srep (Linux x86-64)
-      run: bash build/build.sh linux
-    - name: Test (without wine, 32-bit or the race probe)
-      run: bash tests/run.sh quick
+    - name: Toolchains (32-bit multilib, mingw, wine)
+      run: |
+        sudo dpkg --add-architecture i386
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq g++-multilib g++-mingw-w64-x86-64 g++-mingw-w64-i686 wine wine32 wine64 >/dev/null
+    - name: Build Linux x64, Linux x86, Windows x64, Windows x86
+      run: |
+        bash build/build.sh linux
+        bash build/build.sh linux32
+        bash build/build.sh win64
+        bash build/build.sh win32
+    - name: Test
+      run: bash tests/run.sh
+    - uses: actions/upload-artifact@v4
+      with:
+        name: srep-linux-x64-x86-windows
+        path: dist/
+
+  linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build Linux arm64 (native)
+      run: bash build/build.sh arm64
+    - name: Test
+      run: SREP=dist/srep-arm64 bash tests/run.sh
+    - uses: actions/upload-artifact@v4
+      with:
+        name: srep-linux-arm64
+        path: dist/srep-arm64
+
+  macos-arm64:
+    runs-on: macos-14
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build macOS arm64
+      run: bash build/build.sh macos
+    - name: Test
+      run: SREP=dist/srep-macos bash tests/run.sh
+    - uses: actions/upload-artifact@v4
+      with:
+        name: srep-macos-arm64
+        path: dist/srep-macos

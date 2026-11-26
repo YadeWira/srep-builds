@@ -533,6 +533,77 @@ struct VIRTUAL_MEMORY_MANAGER
         marker="'1e6' is a size",
     )
 
+    # --- 16. arm64: CRC32-C without x86 asm ------------------------------------
+    # srep 3.95 builds for Linux arm64 and macOS arm64. hashes.cpp used the x86
+    # crc32b instruction whenever GCC >= 4.3, whatever the target. arm64 has the
+    # same CRC32-C (Castagnoli) byte step as __crc32cb, so -m1's content-defined
+    # chunking cuts in the same places on x86 and ARM, and archives match.
+    # Other targets get the table-driven fallback that was already there.
+    ok &= apply(
+        hashes,
+        "CRC32-C: x86 asm only on x86, __crc32cb on arm64",
+        """#if GCC_VERSION >= 403
+
+// Requires GCC4.3 and SSE4.2-enabled CPU; and of course compatible only with Crc32CastagnoliPolynom
+#include <x86intrin.h>""",
+        """#if GCC_VERSION >= 403 && defined(__aarch64__)
+
+// ytool patch (3.95): arm64. __crc32cb is the CRC32-C byte step, the same
+// operation as x86's crc32b, so -m1 chunks identically on both.
+#include <arm_acle.h>
+#ifdef __linux__
+#include <sys/auxv.h>
+#include <asm/hwcap.h>
+#endif
+__attribute__((target("+crc"))) uint32 a_mm_crc32_u8(uint32 crc, uint8 value) {
+  return __crc32cb(crc, value);
+}
+#define update_CRC(crc,CRCTable,c)  (a_mm_crc32_u8((crc),(c)))
+
+bool crc32c()  /* arm64 CRC instructions: optional in ARMv8.0, always on Apple */
+{
+#if defined(__APPLE__)
+  return true;
+#elif defined(__linux__)
+  return (getauxval(AT_HWCAP) & HWCAP_CRC32) != 0;
+#else
+  return false;
+#endif
+}
+
+#elif GCC_VERSION >= 403 && (defined(__x86_64__) || defined(__i386__))
+
+// Requires GCC4.3 and SSE4.2-enabled CPU; and of course compatible only with Crc32CastagnoliPolynom
+#include <x86intrin.h>""",
+        marker="__crc32cb",
+    )
+
+    # --- 17. VMAC on arm64: little-endian, and the strict-aliasing pragma ------
+    # Measured with the first arm64 build under qemu: every archive with the
+    # default -hash=vmac decoded on arm64 but not on x86 (and the other way
+    # round): "checksum ... is not the same". md5/sha1/no hash crossed fine.
+    # VMAC_ARCH_BIG_ENDIAN is "not one of x86_64, i386, x64, ARMEL, MIPSEL", and
+    # arm64 defines __aarch64__/__AARCH64EL__, not __ARMEL__, so VMAC read its
+    # words byte-swapped. __AARCH64EL__ (little-endian arm64) joins the list.
+    # arm64 also takes the portable-C 64-bit arithmetic that patch 3 found
+    # miscompiled under strict aliasing on i386; the pragma covers it too.
+    ok &= apply(
+        vmac,
+        "VMAC: arm64 is little-endian",
+        """    (!(__x86_64__ || __i386__ || _M_IX86 || \\
+       _M_X64 || __ARMEL__ || __MIPSEL__))""",
+        """    (!(__x86_64__ || __i386__ || _M_IX86 || \\
+       _M_X64 || __ARMEL__ || __MIPSEL__ || __AARCH64EL__))  /* ytool patch: arm64 */""",
+        marker="ytool patch: arm64 */",
+    )
+    ok &= apply(
+        vmac,
+        "VMAC: no-strict-aliasing also on arm64",
+        "#if defined(__GNUC__) && defined(__i386__)\n#pragma GCC optimize (\"no-strict-aliasing\")",
+        "#if defined(__GNUC__) && (defined(__i386__) || defined(__aarch64__))  /* ytool patch: + arm64 */\n#pragma GCC optimize (\"no-strict-aliasing\")",
+        marker="ytool patch: + arm64",
+    )
+
     # --- 14. Version ------------------------------------------------------------
     ok &= apply(
         srep,

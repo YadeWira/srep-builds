@@ -1,10 +1,13 @@
 #!/bin/bash
 # Builds SREP 3.93a beta (Bulat Ziganshin) from this tree, for personal use.
 #
-#   bash build/build.sh [linux|linux32|win64|win32|all]     (default: linux)
+#   bash build/build.sh [linux|linux32|arm64|macos|win64|win32|all]     (default: linux)
 #
 # Outputs, in dist/ (gitignored):
-#   linux -> srep64   linux32 -> srep32   win64 -> srep.exe   win32 -> srep-x86.exe
+#   linux -> srep64   linux32 -> srep32   arm64 -> srep-arm64   macos -> srep-macos
+#   win64 -> srep.exe   win32 -> srep-x86.exe
+# arm64 builds natively on an arm64 host and cross-compiles elsewhere
+# (aarch64-linux-gnu-g++); macos builds only on macOS (clang, not static).
 #
 # The tree is copied to .work/ and patched there by build/patch_srep.py; each
 # patch fixes a real failure (see TOOL-FIXES.md and OMEGA-IMPROVEMENTS.md).
@@ -60,6 +63,30 @@ build_linux32() {
     && echo "   OK -> dist/srep32" || { echo "   (build failed: g++ -m32 multilib?)"; return 1; }
 }
 
+# Linux arm64, static. Native on arm64, aarch64-linux-gnu-g++ elsewhere.
+build_arm64() {
+  echo "==> srep (srep-arm64)"
+  local B="$CSRC/srep-build-arm64" cxx=aarch64-linux-gnu-g++
+  [ "$(uname -m)" = aarch64 ] && cxx=g++
+  command -v "$cxx" >/dev/null || { echo "   (falta $cxx)"; return 1; }
+  prepare "$B" || return 1
+  ( cd "$B" && make CXX="$cxx" OPTIMISATION="-O3 -funroll-all-loops" >/dev/null 2>&1 \
+      && cp bin/srep "$OUT/srep-arm64" ) \
+    && echo "   OK -> dist/srep-arm64" || { echo "   (build failed)"; return 1; }
+}
+
+# macOS (the host's architecture: arm64 on Apple Silicon). Apple's toolchain
+# has no static libc, so not static; it links only system libraries.
+build_macos() {
+  echo "==> srep (srep-macos)"
+  [ "$(uname -s)" = Darwin ] || { echo "   (solo en macOS)"; return 1; }
+  local B="$CSRC/srep-build-macos"
+  prepare "$B" || return 1
+  ( cd "$B" && make CXX=clang++ STATIC= OPTIMISATION="-O3" DEBUGGING= VERBOSITY= \
+      LDFLAGS="-lpthread -lc++" && cp bin/srep "$OUT/srep-macos" ) \
+    && echo "   OK -> dist/srep-macos" || { echo "   (build failed)"; return 1; }
+}
+
 # $1 = compiler, $2 = scratch dir, $3 = output name
 build_windows() {
   echo "==> srep ($3)"
@@ -81,13 +108,16 @@ build_windows() {
 case "$TARGET" in
   linux) build_linux || rc=1 ;;
   linux32) build_linux32 || rc=1 ;;
+  arm64) build_arm64 || rc=1 ;;
+  macos) build_macos || rc=1 ;;
   win64) build_windows x86_64-w64-mingw32-g++ "$CSRC/srep-build-w64" srep.exe || rc=1 ;;
   win32) build_windows i686-w64-mingw32-g++ "$CSRC/srep-build-x86" srep-x86.exe || rc=1 ;;
   all)
     build_linux || rc=1
     build_linux32 || rc=1
+    build_arm64 || rc=1
     build_windows x86_64-w64-mingw32-g++ "$CSRC/srep-build-w64" srep.exe || rc=1
     build_windows i686-w64-mingw32-g++ "$CSRC/srep-build-x86" srep-x86.exe || rc=1 ;;
-  *) echo "uso: $0 [linux|linux32|win64|win32|all]"; exit 2 ;;
+  *) echo "uso: $0 [linux|linux32|arm64|macos|win64|win32|all]"; exit 2 ;;
 esac
 exit $rc
