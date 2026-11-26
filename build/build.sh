@@ -101,8 +101,18 @@ build_windows() {
     -DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -D_FILE_OFFSET_BITS=64 -DUNICODE -D_UNICODE \
     -Wno-write-strings -Wno-unused-result \
     Compression/Common.cpp Compression/SREP/srep.cpp \
-    -static-libgcc -static-libstdc++ -lole32 -luuid -o "$OUT/$3" ) \
+    $4 -static-libgcc -static-libstdc++ -lole32 -luuid -o "$OUT/$3" ) \
     && echo "   OK -> dist/$3" || { echo "   (build failed)"; return 1; }
+}
+
+# Windows x86 runs on Windows XP. mingw's default (win32 thread model) libgcc
+# since GCC 13 imports Vista's condition variables and GetThreadId, so XP
+# refused to start it (0xC0000139). The posix variant uses winpthreads, linked
+# statically: kernel32 imports XP has. tests/run.sh checks the import table.
+build_win32() {
+  local cxx=i686-w64-mingw32-g++-posix
+  command -v "$cxx" >/dev/null || cxx=i686-w64-mingw32-g++
+  build_windows "$cxx" "$CSRC/srep-build-x86" srep-x86.exe -static
 }
 
 case "$TARGET" in
@@ -111,13 +121,13 @@ case "$TARGET" in
   arm64) build_arm64 || rc=1 ;;
   macos) build_macos || rc=1 ;;
   win64) build_windows x86_64-w64-mingw32-g++ "$CSRC/srep-build-w64" srep.exe || rc=1 ;;
-  win32) build_windows i686-w64-mingw32-g++ "$CSRC/srep-build-x86" srep-x86.exe || rc=1 ;;
+  win32) build_win32 || rc=1 ;;
   all)
     build_linux || rc=1
     build_linux32 || rc=1
     build_arm64 || rc=1
     build_windows x86_64-w64-mingw32-g++ "$CSRC/srep-build-w64" srep.exe || rc=1
-    build_windows i686-w64-mingw32-g++ "$CSRC/srep-build-x86" srep-x86.exe || rc=1 ;;
+    build_win32 || rc=1 ;;
   *) echo "uso: $0 [linux|linux32|arm64|macos|win64|win32|all]"; exit 2 ;;
 esac
 exit $rc

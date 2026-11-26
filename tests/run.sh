@@ -136,6 +136,12 @@ if [ -n "$S32" ]; then
   for m in -m1f -m3f -m4f -m5f; do rt "$S64" "$S32" "$m" dups12m.bin; done
 fi
 
+if [ -f "$DIST/srep-x86.exe" ] && command -v objdump >/dev/null; then
+  echo "== srep-x86.exe imports only what Windows XP has"
+  vista="$(LC_ALL=C objdump -p "$DIST/srep-x86.exe" | grep -oE "ConditionVariable|SRWLock|GetThreadId|InitOnce|GetTickCount64|FlsAlloc|CreateSymbolicLink|GetFinalPathName|InitializeCriticalSectionEx|CreateEventEx|GetFileInformationByHandleEx|SetFileInformationByHandle|QueryFullProcessImageName|libwinpthread" | sort -u | tr '\n' ' ')"
+  [ -z "$vista" ] && ok || bad "srep-x86.exe imports what XP lacks: $vista"
+fi
+
 QEMU=""; command -v qemu-aarch64 >/dev/null && QEMU=qemu-aarch64
 if [ -n "$QEMU" ] && [ -f "$DIST/srep-arm64" ] && [ "$(uname -m)" != aarch64 ] && [ "$QUICK" != quick ]; then
   echo "== srep-arm64 under qemu (patches 16, 17)"
