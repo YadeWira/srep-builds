@@ -63,9 +63,12 @@ For ytool, put it next to the ytool binary: `srep64` (or `srep`) on Linux,
 `srep.exe` on Windows (rename `srep-x86.exe` for the x86 package).
 
 With the same input and seed, Linux x86-64, Linux arm64 and Windows x64 write the
-same bytes (measured on 48 MB, `-m1f`..`-m5f`); the x86 builds do too except for
-`-m3`/`-m4` above roughly 16 MB, where they pick other, equally valid matches.
-Every build decodes every other build's archives. 32-bit builds
+same bytes (measured on 48 MB, `-m1f`..`-m5f`). The x86 builds do too except for
+`-m3`/`-m4` above roughly 16 MB, where they pick other, equally valid matches, and
+macOS orders matches with the same source differently (its C++ library sorts ties
+another way), so its `f` and index-LZ archives differ. Every build decodes every
+other build's archives: macOS's were decoded by the five others, and CI has every
+platform decode archives made on Linux x86-64 (`tests/golden/`). 32-bit builds
 reading stdin need `-s<size>`: without it srep assumes 25 GB and asks for more
 memory than a 32-bit process has.
 
@@ -127,8 +130,8 @@ on seven inputs, through files and through pipes; every hash; small blocks and
 many threads; the same seed giving the same archive; damaged and truncated
 archives failing with a non-zero exit; the option and command-line fixes; the
 32-bit, arm64 and Windows builds against the 64-bit one, both ways; the XP
-import table; and a probe build that holds the digest race open. 250 checks with
-every build present.
+import table; golden archives from Linux x86-64; and a probe build that holds the
+digest race open. About 255 checks with every build present.
 
 [ciBadge]: https://github.com/YadeWira/srep-builds/actions/workflows/ci.yml/badge.svg "Continuous Integration"
 [ciLink]: https://github.com/YadeWira/srep-builds/actions/workflows/ci.yml
