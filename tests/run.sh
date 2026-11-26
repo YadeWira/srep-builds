@@ -190,5 +190,14 @@ if [ "$QUICK" != quick ]; then
   fi
 fi
 
+# Not a check: md5 of archives made with the fixed seed, to compare platforms
+# (the CI prints one block per runner; equal lines = byte-identical archives).
+echo "== fingerprints (SREP_SEED_HEX fixed, dups12m.bin)"
+for m in -m1f -m3f -m5f -m3 -m3o; do
+  SREP_SEED_HEX=$SEED $S64 $m "$W/dups12m.bin" "$W/fp.s" >/dev/null 2>&1
+  if command -v md5sum >/dev/null; then h=$(md5sum < "$W/fp.s" | cut -c1-32); else h=$(md5 -q "$W/fp.s"); fi
+  echo "   $m $h"
+done
+
 echo "== $pass OK, $fail FAIL"
 [ "$fail" = 0 ]
