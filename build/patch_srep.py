@@ -604,13 +604,74 @@ bool crc32c()  /* arm64 CRC instructions: optional in ARMv8.0, always on Apple *
         marker="ytool patch: + arm64",
     )
 
+    # --- 18. A command line for today, with every old option kept ------------
+    # 3.95. srep only showed its help with no file names and a terminal on both
+    # ends; -h, --help and --version were "Invalid option", and compressing a
+    # .srep without -d silently compressed it a second time (exit 0). Added,
+    # without changing any existing option: -h/--help/-?, --version/-V,
+    # --decompress and --info (= -d, -i), a grouped help with examples and exit
+    # codes, a hint after "Invalid option", and a refusal to compress a file
+    # that already is a srep archive (--recompress to do it anyway).
+    src = read(srep)
+    if "ytool patch: modern CLI" in src:
+        print("   = modern CLI: already applied")
+    else:
+        old_loop = """  while(argv[1])
+  {
+    char cur_option[1000] = "";
+    if (strequ(argv[1],"-d")) {"""
+        new_loop = """  bool show_help = false, allow_recompress = false;   // ytool patch: modern CLI
+  while(argv[1])
+  {
+    char cur_option[1000] = "";
+    if (strequ(argv[1],"--decompress"))  argv[1] = (char*)"-d";
+    if (strequ(argv[1],"--info"))        argv[1] = (char*)"-i";
+    if (strequ(argv[1],"-h") || strequ(argv[1],"--help") || strequ(argv[1],"-?") || strequ(argv[1],"/?")) {
+      show_help = true;  argv++;  continue;
+    }
+    if (strequ(argv[1],"--version") || strequ(argv[1],"-V")) {
+      printf ("%s (%s)\\n", program_version, program_date);
+      exit (NO_ERRORS);
+    }
+    if (strequ(argv[1],"--recompress")) {
+      allow_recompress = true;  argv++;  continue;
+    }
+    if (strequ(argv[1],"-d")) {"""
+        old_err = """      error (ERROR_CMDLINE, "Invalid option: %s",  (*cur_option? cur_option : argv[1]));"""
+        new_err = """      error (ERROR_CMDLINE, "Invalid option: %s\\n  (srep --help lists the options)",  (*cur_option? cur_option : argv[1]));"""
+        i = src.find("  if (filenames[1]==NULL) {\n    printf (")
+        j = src.find("    exit (NO_ERRORS);\n  }\n", i)
+        old_check = """  if (!strequ(finame,"-") && strequ(finame,foutname))
+    error (ERROR_IO, "Input and output files should have different names");
+"""
+        new_check = old_check + """
+  // ytool patch: compressing an archive again is almost always a missing -d.
+  if (cmdmode==COMPRESSION && !allow_recompress && !strequ(finame,"-"))
+  {
+    FILE *probe = fopen (finame, "rb");
+    uint32 sig[2] = {0,0};
+    if (probe)  {if (fread (sig, 1, sizeof(sig), probe) != sizeof(sig))  sig[0] = 0;  fclose (probe);}
+    if (sig[0]==BULAT_ZIGANSHIN_SIGNATURE && sig[1]==SREP_SIGNATURE)
+      error (ERROR_CMDLINE, "%s is already a srep archive: use -d to decompress it\\n  (--recompress compresses it again)", finame);
+  }
+"""
+        if old_loop in src and old_err in src and i > 0 and j > i and old_check in src:
+            help_c = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "help.c")).read()
+            src = src[:i] + help_c + src[j + len("    exit (NO_ERRORS);\n  }\n"):]
+            src = src.replace(old_loop, new_loop, 1).replace(old_err, new_err, 1).replace(old_check, new_check, 1)
+            write(srep, src)
+            print("   + modern CLI")
+        else:
+            print("   ! modern CLI: PATTERN NOT FOUND")
+            ok = False
+
     # --- 14. Version ------------------------------------------------------------
     ok &= apply(
         srep,
-        "version: SREP 3.94 (ytool build)",
+        "version: SREP 3.95",
         'char *program_version     = "SREP 3.93a beta", *program_date = "October 11, 2014";',
-        'char *program_version     = "SREP 3.94 (3.93a + ytool fixes)", *program_date = "November 26, 2026";',
-        marker="SREP 3.94",
+        'char *program_version     = "SREP 3.95 (3.93a + ytool fixes)", *program_date = "November 26, 2026";',
+        marker="SREP 3.95",
     )
 
     return 0 if ok else 1

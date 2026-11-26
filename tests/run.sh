@@ -21,7 +21,7 @@ bad() { fail=$((fail+1)); echo "   FAIL: $*"; }
 # SREP=<binary> tests that one as the main build (the CI runs each platform's
 # native binary that way); otherwise dist/srep64, built if missing.
 if [ -n "${SREP:-}" ]; then
-  S64="$SREP"
+  S64="$(cd "$(dirname "$SREP")" && pwd)/$(basename "$SREP")"   # the pipe cases cd elsewhere
 else
   [ -x "$DIST/srep64" ] || bash build/build.sh linux >/dev/null || { echo "build failed"; exit 3; }
   S64="$DIST/srep64"
@@ -113,7 +113,17 @@ $S64 -m3f -hash= "$W/one.bin" "$W/h.s" >/dev/null 2>&1 && bad "-hash= (empty) ac
 # wrong meaning. -s1.5 is still an interval.
 $S64 -m3f -s1e6 "$W/random1m.bin" "$W/s.s" >/dev/null 2>&1 && bad "-s1e6 accepted as an interval" || ok
 $S64 -m3f -s1.5 "$W/random1m.bin" "$W/s.s" >/dev/null 2>&1 && ok || bad "-s1.5 (interval) rejected"
-banner="$($S64 2>&1 </dev/null)"; [[ "$banner" == "SREP 3.94"* ]] && ok || bad "version string"
+banner="$($S64 --version 2>&1)"; [[ "$banner" == "SREP 3.95"* ]] && ok || bad "version string"
+
+echo "== command line (patch 18)"
+$S64 --help 2>&1 | grep -q "Exit codes" && ok || bad "--help"
+$S64 -h >/dev/null 2>&1 && ok || bad "-h exit code"
+$S64 -zz "$W/one.bin" "$W/z.s" >/dev/null 2>&1 && bad "-zz accepted" || ok
+$S64 -m3f "$W/dups12m.bin" "$W/re.srep" >/dev/null 2>&1
+$S64 -m3f "$W/re.srep" "$W/re2.srep" >/dev/null 2>&1 && bad "compressed a srep archive again without --recompress" || ok
+$S64 -m3f --recompress "$W/re.srep" "$W/re2.srep" >/dev/null 2>&1 && ok || bad "--recompress refused"
+$S64 --decompress "$W/re.srep" "$W/re.out" >/dev/null 2>&1 && cmp -s "$W/dups12m.bin" "$W/re.out" && ok || bad "--decompress"
+$S64 --info "$W/re.srep" >/dev/null 2>&1 && ok || bad "--info"
 
 if [ -n "$S32" ]; then
   echo "== 32-bit build (patches 4, 7)"
