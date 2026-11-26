@@ -190,6 +190,18 @@ if [ "$QUICK" != quick ]; then
   fi
 fi
 
+echo "== golden archives (made by Linux x86-64, decoded here)"
+python3 - "$W" <<'PY'
+import random, sys
+unit = bytes((i * 31 + 7) & 0xFF for i in range(4096)); random.seed(5)
+open(sys.argv[1] + '/golden.bin', 'wb').write(unit * 75 + random.randbytes(40000) + unit * 20)
+PY
+for g in "$ROOT"/tests/golden/*.srep; do
+  [ -f "$g" ] || continue
+  $S64 -d "$g" "$W/golden.out" >/dev/null 2>&1 && cmp -s "$W/golden.bin" "$W/golden.out" && ok \
+    || bad "golden $(basename "$g") does not decode here"
+done
+
 # Not a check: md5 of archives made with the fixed seed, to compare platforms
 # (the CI prints one block per runner; equal lines = byte-identical archives).
 echo "== fingerprints (SREP_SEED_HEX fixed, dups12m.bin)"
