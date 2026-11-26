@@ -52,8 +52,14 @@ jobs:
     - name: Build macOS arm64
       run: bash build/build.sh macos
     - name: Test
-      run: SREP=dist/srep-macos bash tests/run.sh
+      run: SREP=dist/srep-macos FP_DIR=fp bash tests/run.sh
     - uses: actions/upload-artifact@v4
       with:
         name: srep-macos-arm64
         path: dist/srep-macos
+    # macOS sorts ties in the second pass differently (libc++): its archives
+    # are decoded by the other platforms' builds outside CI with these.
+    - uses: actions/upload-artifact@v4
+      with:
+        name: macos-fingerprint-archives
+        path: fp/

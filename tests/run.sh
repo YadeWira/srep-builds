@@ -195,6 +195,8 @@ fi
 echo "== fingerprints (SREP_SEED_HEX fixed, dups12m.bin)"
 for m in -m1f -m3f -m5f -m3 -m3o; do
   SREP_SEED_HEX=$SEED $S64 $m "$W/dups12m.bin" "$W/fp.s" >/dev/null 2>&1
+  # FP_DIR=<dir> keeps the input and these archives, to decode them elsewhere
+  [ -n "${FP_DIR:-}" ] && { mkdir -p "$FP_DIR"; cp "$W/fp.s" "$FP_DIR/fp$m.srep"; cp "$W/dups12m.bin" "$FP_DIR/"; }
   if command -v md5sum >/dev/null; then h=$(md5sum < "$W/fp.s" | cut -c1-32); else h=$(md5 -q "$W/fp.s"); fi
   echo "   $m $h"
 done
