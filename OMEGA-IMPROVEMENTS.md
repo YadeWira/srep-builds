@@ -21,6 +21,20 @@ same before and after, so adopting them costs no interoperability.
 | `#pragma GCC optimize ("no-strict-aliasing")` for i386 in `vmac.c` | **Cross-architecture corruption.** A win64-encoded `-dd1` stream fails its own checksum when decoded on i386, with no error, only wrong data. The arch `#if` chain never defines `ADD128`/`MUL64`/`PMUL64` for i386, so it falls through to the portable-C fallback, whose type punning `-O2`+ strict aliasing is entitled to break. x86-64 never reaches that code, which is why the bug is one-directional. | `contrib/patch_srep.py` (3) |
 | `nh_16_func` operands declared read-write (`"+S"`/`"+D"`/`"+c"`) | **i686 SIGSEGV.** The asm advances esi/edi and decrements ecx but declared them read-only, so `-fipa-ra` could skip reloading ecx between the two back-to-back calls that `VMAC_TAG_LEN==128` always makes. ecx arrived as 0, the counter underflowed, and the MMX copy loop ran off the buffer. | `contrib/patch_srep.py` (4) |
 
+Added in 3.94 (patches 8-13), each re-measured on this tree:
+
+| Fix | What it did here | Patch |
+|---|---|---|
+| Block header copied before `bg_thread.write` (omega-srep `741e7b8`, 1.0.7) | **Archives that do not decompress, exit 0.** The copy of `header[]` (with the block digest the background thread writes) raced that thread. 0 failures in 600 normal runs here; with a 2 ms pause after the signal (`SREP_RACE_PROBE`), 140 of 140 archives failed, and 0 of 140 with the fix. | 8 |
+| `-vmfile=`/`-vmblock=` before `-v` (1.0.6) | Both options were rejected as `Invalid option`. | 9 |
+| VM spill without progress is an error (1.0.6/1.0.7) | A loop with no exit if no match fits a VM block. Not reproduced here; a backstop. | 10 |
+| CDC rolling hash on `uint64` (1.0.5) | In omega-srep it corrupted archives across word sizes; in 3.93a it does not (decode never re-chunks, and `-m1` uses the CRC hash on SSE4.2 CPUs). Only output determinism on CPUs without SSE4.2. | 11 |
+| `-hash=` with no name rejected (1.0.7) | It turned checksums off silently. | 12 |
+| `-s1e6` is not an interval (1.0.7) | It became a 1e6-second progress interval. | 13 |
+
+Not taken: the `-dup` fixes (no `-dup` here), `mkstemp` temp files (3.93a names them
+with `-temp=`/`-vmfile=`, which ytool sets per process), PGO/LTO.
+
 All four were reproduced or bisected in omega-srep's own history; the reasoning is
 repeated next to the patch so it survives without network access to that repo.
 

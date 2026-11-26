@@ -73,6 +73,41 @@ produce byte-identical `.pmp` files that round-trip. With the seed fixed, a 64-b
 and a 32-bit build of srep produce **byte-identical** archives — which also proves
 the CDC chunking is architecture-independent in the methods ytool uses.
 
+## 3. Patch 7 did nothing, and `-hash=sha1` was broken on Linux i686
+
+**Symptom.** Found by the first Linux i686 build (3.94). Every archive written with
+`-hash=sha1` failed its own checksum on decode, on any decoder: `ERROR! Decompression
+problem: checksum of decompressed data is not the same`, exit 4. md5, sha512 and vmac
+were fine.
+
+**Root cause.** Patch 7 was meant to add the `"memory"` clobber to LibTomCrypt's i386
+`STORE32H`/`LOAD32H` asm (omega-srep 1.0.3), but it only printed a note and changed
+nothing. Those macros write and read memory through a register operand without saying
+so, and GCC moved loads and stores across them. The mingw i686 build did not show it
+(it does not reach that asm the same way), which is how the no-op went unnoticed.
+
+**Fix.** The clobber is now applied to the four asm statements (`STORE32H`, `LOAD32H`
+and the x86_64-only `STORE64H`/`LOAD64H`, where nothing failed). **Verified**: sha1
+archives from the i686 build decode on i686 and x86_64.
+
+## 4. Patch 4 produced asm that does not compile
+
+**Symptom.** The Linux i686 build stopped in `vmac.c`: `input operand constraint contains
+'+'`. Patch 4 (omega-srep's `nh_16_func` read-write operands) added an output section
+but left the original empty one (a lone `:`), so the asm had one section too many.
+Nobody had compiled it: `nh_16_func` exists only with `-msse2`, and the mingw i686 build
+is made without it. The lone `:` is now removed.
+
+## 5. What 32-bit and 64-bit builds write
+
+With the same seed, `-m1`, `-m2` and `-m5` archives are byte-identical between the
+i686 and x86_64 builds, and so is everything on small inputs. `-m3` and `-m4` above
+roughly 16 MB are not: the match finder hashes through `size_t` in more than one
+place (`HashValue` in `hash_table.cpp` is one; pinning it alone did not make the
+outputs equal), so the two builds pick different, equally valid matches. Each decodes
+the other's archives (tested). Making them identical would mean auditing the whole
+match finder, for no gain in correctness, so it is left as it is.
+
 ## Limitation that remains, and is not fixable from here
 
 `-m1`, `-m2` and the other suffixes-less methods write an **index-LZ** footer (format

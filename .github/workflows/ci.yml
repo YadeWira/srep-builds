@@ -9,12 +9,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v2
-
-    - name: Build srep
-      run: ./Makefile
-
-    - name: Test srep
-      run: bin/srep
+    - uses: actions/checkout@v4
+    - name: Build srep (Linux x86-64)
+      run: bash build/build.sh linux
+    - name: Test (without wine, 32-bit or the race probe)
+      run: bash tests/run.sh quick

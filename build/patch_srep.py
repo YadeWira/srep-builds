@@ -77,6 +77,12 @@ def patch_nh16(path):
                         + indent + '   calls this twice back to back). "+" makes the modification visible. */\n'
                         + indent + ': "+S" (mp_scratch), "+D" (kp_scratch), "+c" (nw_scratch)\n'
                         + indent + ': "a" (rl), "d" (rh)')
+            # The outputs were empty: a lone ':' line right above. The new
+            # outputs take its place, or the asm gets one section too many.
+            # (Unnoticed until a Linux i686 build: it is the only build that
+            # compiles this SSE2-only function; mingw builds without -msse2.)
+            if lines[i - 1].strip() == ":":
+                del lines[i - 1]
             # Insert the scratch variables just before the asm statement.
             lines.insert(asm, '\t/* ytool patch: see the operand list at the end of this asm. */\n'
                               '\tconst uint64_t *mp_scratch = mp;\n'
@@ -313,18 +319,229 @@ def main():
     # through a pointer-held register without declaring the memory side effect,
     # the same bug class as VMAC above. Only present on i386, so this is a no-op
     # on x86_64. Same fix as omega-srep's 72e0b6c (1.0.3).
-    if os.path.exists(mt):
-        src = read(mt)
-        if 'ytool patch: "memory" clobber' not in src:
-            # The macros are guarded by __GNUC__ && __i386__; add the clobber to
-            # the STORE32H/LOAD32H asm output lists.
-            changed = False
-            for mac in ("STORE32H", "LOAD32H"):
-                needle = f"#define {mac}(x, y) "
-                if needle in src:
-                    changed = True
-            if changed:
-                print("   ~ LibTomCrypt STORE32H/LOAD32H: see note (applied via -fno-strict-aliasing fallback)")
+    # Until 3.94 this step only printed a note and changed nothing; measured on
+    # a Linux i686 build, every -hash=sha1 archive then failed its own checksum
+    # (exit 4, on any decoder). The win32 build did not show it.
+    # The 64-bit STORE64H/LOAD64H asm (x86_64 only) has the same operand lists
+    # and gets the same clobber; no failure was seen there.
+    src = read(mt)
+    if 'ytool patch: "memory" clobber' in src:
+        print('   = LibTomCrypt STORE/LOAD asm: "memory" clobber: already applied')
+    else:
+        st = '::"r"(x), "r"(y));'
+        ld = ':"=r"(x): "r"(y));'
+        if src.count(st) == 2 and src.count(ld) == 2:
+            src = src.replace(st, '::"r"(x), "r"(y) : "memory"); /* ytool patch: "memory" clobber */')
+            src = src.replace(ld, ':"=r"(x): "r"(y) : "memory"); /* ytool patch: "memory" clobber */')
+            write(mt, src)
+            print('   + LibTomCrypt STORE/LOAD asm: "memory" clobber')
+        else:
+            print('   ! LibTomCrypt STORE/LOAD asm: PATTERN NOT FOUND')
+            ok = False
+
+    decomp = os.path.join(root, "Compression/SREP/decompress.cpp")
+    cdc = os.path.join(root, "Compression/SREP/compress_cdc.cpp")
+
+    # --- 8. Future-LZ/Index-LZ: block digest copied after the BG thread had it --
+    # Origin: omega-srep 741e7b8 (1.0.7), re-measured here. The main thread
+    # signals the background thread (bg_thread.write) and only then copies
+    # header[] -- including header[3..], the block digest -- into the
+    # COMPRESSED_BLOCK kept for the second pass. The BG thread's next-next
+    # iteration reuses that header buffer, so the copy races its next digest
+    # write: the archive gets another block's digest (or half of one), srep exits
+    # 0, and decode fails with a checksum error. Rare on a normal build (0 of
+    # 600 runs here); with a 2 ms pause inserted after the signal, 140 of 140
+    # archives fail. Copy first, signal after. Same bytes when nothing races.
+    # SREP_RACE_PROBE (a test build only) keeps that pause, so the regression
+    # test can prove the fix holds with the window wide open.
+    ok &= apply(
+        srep,
+        "Future-LZ digest race: copy the header before bg_thread.write",
+        """        // Write compressed block to output file(s)
+        bg_thread.write (header[2], stat, literal_bytes);
+        if (bg_thread.errcode)  {errcode = bg_thread.errcode; goto cleanup;}
+
+        // Store matches in memory
+        if (FUTURE_LZ || INDEX_LZ)""",
+        """        // Store matches in memory. ytool patch: BEFORE bg_thread.write, which
+        // hands header[] (and the digest in header[3..]) back to the BG thread.
+        if (FUTURE_LZ || INDEX_LZ)""",
+        marker="ytool patch: BEFORE bg_thread.write",
+    )
+    ok &= apply(
+        srep,
+        "Future-LZ digest race: signal after the copy",
+        """            compsize += sizeof(STAT);   // accounting for the future write of statsize_buf[]
+        }
+
+        // Update statistics""",
+        """            compsize += sizeof(STAT);   // accounting for the future write of statsize_buf[]
+        }
+
+        // Write compressed block to output file(s)
+        bg_thread.write (header[2], stat, literal_bytes);
+        if (bg_thread.errcode)  {errcode = bg_thread.errcode; goto cleanup;}
+#ifdef SREP_RACE_PROBE
+        usleep(2000);   // test build only: hold the race window open
+#endif
+
+        // Update statistics""",
+        marker="SREP_RACE_PROBE",
+    )
+
+    # --- 9. -vmfile= and -vmblock= were unreachable ---------------------------
+    # Origin: omega-srep 1.0.6. Options are matched in one if-chain, and
+    # start_with(argv[1],"-v") (verbosity) comes first, so "-vmfile=x" was read
+    # as verbosity "mfile=x" and rejected: "Invalid option". Matched before -v now.
+    src = read(srep)
+    vm_opts = """    } else if (start_with(argv[1],"-vmfile=")) {
+      vmfile_name = argv[1]+8;
+    } else if (start_with(argv[1],"-vmblock=")) {
+      vm_block = parseMem (argv[1]+9, &errcode, 'm');
+"""
+    verb = """    } else if (strequ(argv[1],"-v")) {
+      verbosity = 1;
+"""
+    if "ytool patch: -vmfile= before -v" in src:
+        print("   = -vmfile=/-vmblock= before -v: already applied")
+    elif vm_opts in src and verb in src:
+        src = src.replace(vm_opts, "", 1)
+        src = src.replace(verb, "    // ytool patch: -vmfile= before -v, which used to swallow it\n" + vm_opts + verb, 1)
+        write(srep, src)
+        print("   + -vmfile=/-vmblock= before -v")
+    else:
+        print("   ! -vmfile=/-vmblock= before -v: PATTERN NOT FOUND")
+        ok = False
+
+    # --- 10. VM spill that cannot make progress hung forever ------------------
+    # Origin: omega-srep 1.0.6/1.0.7. When decoding with less memory than the
+    # matches need, save_to_disk() packs matches into one VM block; a match
+    # longer than a block never fits, nothing is evicted, and the caller's
+    # `while (not enough space) save_to_disk()` spins at 0% CPU forever while the
+    # VM file grows. Now save_to_disk() says whether it freed anything, and a
+    # spill that cannot progress is an error (exit 5) with a hint, not a hang.
+    # Not reproduced here (a 400 KB match across 1 MB blocks decoded fine with
+    # -mem=1mb -vmblock=64k); kept as a backstop because the loop has no other
+    # exit, and it changes nothing when a spill does progress.
+    ok &= apply(
+        decomp,
+        "VM spill: save_to_disk reports progress",
+        """  void save_to_disk (MEMORY_MANAGER &mm, LZ_MATCH_HEAP &lz_matches)
+  {""",
+        """  // ytool patch: returns false when nothing could be moved to disk, so the
+  // callers can stop instead of looping forever.
+  bool save_to_disk (MEMORY_MANAGER &mm, LZ_MATCH_HEAP &lz_matches)
+  {""",
+        marker="bool save_to_disk",
+    )
+    ok &= apply(
+        decomp,
+        "VM spill: nothing saved = no progress",
+        """    *(STAT*)p = 0;       // End-of-block mark
+""",
+        """    *(STAT*)p = 0;       // End-of-block mark
+    if (p == vmbuf)  return false;   // ytool patch: no match fit in a block
+""",
+        marker="if (p == vmbuf)  return false;",
+    )
+    ok &= apply(
+        decomp,
+        "VM spill: return true after a block is written",
+        """    lz_matches.insert(mark);
+  }""",
+        """    lz_matches.insert(mark);
+    return true;
+  }""",
+        marker="lz_matches.insert(mark);\n    return true;",
+    )
+    for old, new, nm in (
+        ("    while (mm.available_space() < VMBLOCK_SIZE)   save_to_disk (mm, lz_matches);",
+         "    while (mm.available_space() < VMBLOCK_SIZE)   if (!save_to_disk (mm, lz_matches))  vm_stuck();",
+         "VM spill: restore_from_disk stops when stuck"),
+        ("        while (lz_match.len > mm.available_space())   vm.save_to_disk (mm, lz_matches);",
+         "        while (lz_match.len > mm.available_space())   if (!vm.save_to_disk (mm, lz_matches))  vm_stuck();",
+         "VM spill: future-match store stops when stuck"),
+    ):
+        ok &= apply(decomp, nm, old, new, marker=new)
+    ok &= apply(
+        decomp,
+        "VM spill: vm_stuck()",
+        """struct VIRTUAL_MEMORY_MANAGER
+{""",
+        """// ytool patch: a spill that cannot free memory used to loop forever.
+static void vm_stuck()
+{
+  error (ERROR_MEMORY, "Not enough memory to decompress: a match does not fit one -vmblock. Use a larger -mem or -vmblock");
+}
+
+struct VIRTUAL_MEMORY_MANAGER
+{""",
+        marker="static void vm_stuck()",
+    )
+
+    # --- 11. CDC rolling hash: size_t made -m1 depend on the word size --------
+    # Origin: omega-srep 1.0.5, where it corrupted archives across word sizes.
+    # In 3.93a it does not: decode never recomputes chunk boundaries, and -m1
+    # only uses this hash on CPUs without SSE4.2 (otherwise CrcRollingHash
+    # <uint32>). Measured: -m1f/-m2f/-m3f/-m5f archives from the 64-bit and
+    # 32-bit builds are byte-identical with a fixed seed, and decode on the
+    # other word size, before and after. What remains is that on a CPU without
+    # SSE4.2 the two word sizes would cut chunks differently (mod 2^32 vs 2^64),
+    # so the same input would give different archives. Pinned to uint64, which
+    # is what size_t already is on 64-bit: no 64-bit output changes.
+    src = read(cdc)
+    if "ytool patch: uint64 CDC hash" in src:
+        print("   = CDC rolling hash uint64: already applied")
+    elif "PolynomialRollingHash<size_t>" in src and "fast_find_chunks<size_t," in src:
+        src = src.replace("PolynomialRollingHash<size_t>", "PolynomialRollingHash<uint64>")
+        src = src.replace("fast_find_chunks<size_t,", "fast_find_chunks<uint64,")
+        src = "// ytool patch: uint64 CDC hash (was size_t: word-size dependent chunking)\n" + src
+        write(cdc, src)
+        print("   + CDC rolling hash uint64")
+    else:
+        print("   ! CDC rolling hash uint64: PATTERN NOT FOUND")
+        ok = False
+
+    # --- 12. -hash= with no name silently turned checksums off ------------------
+    # Origin: omega-srep 1.0.7. hash_by_name("") is the "no hash" entry, which
+    # -hash- selects on purpose; "-hash=" (a typo, an empty variable) got the same
+    # and wrote archives with no checksums. It is a command-line error now.
+    ok &= apply(
+        srep,
+        "-hash= with no name is an error",
+        """    } else if (start_with(argv[1],"-hash=")) {
+      selected_hash = hash_by_name(argv[1]+6, errcode);""",
+        """    } else if (start_with(argv[1],"-hash=")) {
+      if (argv[1][6] == 0)  errcode = ERROR_CMDLINE;   // ytool patch: use -hash- to disable
+      else
+      selected_hash = hash_by_name(argv[1]+6, errcode);""",
+        marker="use -hash- to disable",
+    )
+
+    # --- 13. -s1e6 read as a stats interval ------------------------------------
+    # Origin: omega-srep 1.0.7. Any -s value containing 'e' was taken as the
+    # progress interval, so "-s1e6" (a size in scientific notation) became an
+    # interval of 1e6 seconds instead of a 1,000,000-byte file size. Only a
+    # fractional value is an interval now; "-s1e6" is then read as a size,
+    # which parseMem64 does not take in that notation, so it is an error
+    # instead of a silently wrong meaning.
+    ok &= apply(
+        srep,
+        "-s with 'e' is a size, not an interval",
+        """(start_with(argv[1],"-s") && (strchr(argv[1],'.')||strchr(argv[1],'e')))""",
+        """(start_with(argv[1],"-s") && strchr(argv[1],'.'))   /* ytool patch: '1e6' is a size */""",
+        marker="'1e6' is a size",
+    )
+
+    # --- 14. Version ------------------------------------------------------------
+    ok &= apply(
+        srep,
+        "version: SREP 3.94 (ytool build)",
+        'char *program_version     = "SREP 3.93a beta", *program_date = "October 11, 2014";',
+        'char *program_version     = "SREP 3.94 (3.93a + ytool fixes)", *program_date = "November 26, 2026";',
+        marker="SREP 3.94",
+    )
+
     return 0 if ok else 1
 
 

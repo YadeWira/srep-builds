@@ -1,10 +1,10 @@
 #!/bin/bash
 # Builds SREP 3.93a beta (Bulat Ziganshin) from this tree, for personal use.
 #
-#   bash build/build.sh [linux|win64|win32|all]     (default: linux)
+#   bash build/build.sh [linux|linux32|win64|win32|all]     (default: linux)
 #
 # Outputs, in dist/ (gitignored):
-#   linux -> srep64        win64 -> srep.exe        win32 -> srep-x86.exe
+#   linux -> srep64   linux32 -> srep32   win64 -> srep.exe   win32 -> srep-x86.exe
 #
 # The tree is copied to .work/ and patched there by build/patch_srep.py; each
 # patch fixes a real failure (see TOOL-FIXES.md and OMEGA-IMPROVEMENTS.md).
@@ -48,6 +48,18 @@ build_linux() {
     && echo "   OK -> dist/srep64" || { echo "   (build failed)"; return 1; }
 }
 
+# Linux i686, static. Needs gcc's 32-bit multilib (g++ -m32, libc6-dev-i386,
+# lib32stdc++-dev). The only build that compiles VMAC's SSE2 nh_16 asm and
+# LibTomCrypt's i386 bswap asm with GCC, which is where patches 4 and 7 matter.
+build_linux32() {
+  echo "==> srep (srep32)"
+  local B="$CSRC/srep-build-32"
+  prepare "$B" || return 1
+  ( cd "$B" && make OPTIMISATION="-O3 -mtune=generic -funroll-all-loops -msse2 -m32" \
+      LDFLAGS="-m32 -lpthread -lstdc++ -static" >/dev/null 2>&1 && cp bin/srep "$OUT/srep32" ) \
+    && echo "   OK -> dist/srep32" || { echo "   (build failed: g++ -m32 multilib?)"; return 1; }
+}
+
 # $1 = compiler, $2 = scratch dir, $3 = output name
 build_windows() {
   echo "==> srep ($3)"
@@ -68,12 +80,14 @@ build_windows() {
 
 case "$TARGET" in
   linux) build_linux || rc=1 ;;
+  linux32) build_linux32 || rc=1 ;;
   win64) build_windows x86_64-w64-mingw32-g++ "$CSRC/srep-build-w64" srep.exe || rc=1 ;;
   win32) build_windows i686-w64-mingw32-g++ "$CSRC/srep-build-x86" srep-x86.exe || rc=1 ;;
   all)
     build_linux || rc=1
+    build_linux32 || rc=1
     build_windows x86_64-w64-mingw32-g++ "$CSRC/srep-build-w64" srep.exe || rc=1
     build_windows i686-w64-mingw32-g++ "$CSRC/srep-build-x86" srep-x86.exe || rc=1 ;;
-  *) echo "uso: $0 [linux|win64|win32|all]"; exit 2 ;;
+  *) echo "uso: $0 [linux|linux32|win64|win32|all]"; exit 2 ;;
 esac
 exit $rc
