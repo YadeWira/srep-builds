@@ -17,6 +17,9 @@ external program for `-dd1`..`-dd5`.
 | Windows x86 | built in CI, tested under wine; real Windows XP and 7 |
 | macOS arm64 | built and tested in CI (Apple Silicon runner) |
 
+More in the [wiki](https://github.com/YadeWira/srep-builds/wiki): platforms, the command
+line, every fix and how it was measured.
+
 ```sh
 srep -m3f big.tar big.tar.srep      # compress
 srep -d big.tar.srep big.tar        # decompress, byte for byte
