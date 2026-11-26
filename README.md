@@ -131,7 +131,7 @@ many threads; the same seed giving the same archive; damaged and truncated
 archives failing with a non-zero exit; the option and command-line fixes; the
 32-bit, arm64 and Windows builds against the 64-bit one, both ways; the XP
 import table; golden archives from Linux x86-64; and a probe build that holds the
-digest race open. About 255 checks with every build present.
+digest race open. 256 checks with every build present.
 
 [ciBadge]: https://github.com/YadeWira/srep-builds/actions/workflows/ci.yml/badge.svg "Continuous Integration"
 [ciLink]: https://github.com/YadeWira/srep-builds/actions/workflows/ci.yml
