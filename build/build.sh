@@ -101,7 +101,7 @@ build_windows() {
     -DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -D_FILE_OFFSET_BITS=64 -DUNICODE -D_UNICODE \
     -Wno-write-strings -Wno-unused-result \
     Compression/Common.cpp Compression/SREP/srep.cpp \
-    $4 -static-libgcc -static-libstdc++ -lole32 -luuid -o "$OUT/$3" ) \
+    ${4:-} -static-libgcc -static-libstdc++ -lole32 -luuid -o "$OUT/$3" ) \
     && echo "   OK -> dist/$3" || { echo "   (build failed)"; return 1; }
 }
 
