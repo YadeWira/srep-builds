@@ -178,8 +178,25 @@ On 1 GB of mixed files (warm cache): `-m1f` 0.8 s, `-m3f` 2.3 s, `-m5f` 3.3 s, d
 0.4 s. `-t` changes neither the time nor the bytes for these methods: the main loop
 is sequential. A callgrind profile of `-m3f` puts 70% in that loop (rolling hash,
 hash table, match extension) and 20% in VMAC. LTO changed nothing measurable.
-Parallelizing the rolling hash and VMAC per block could save perhaps a third of the
-CPU time, but at these speeds the disk is usually the limit, so it was left out.
+
+Looked at again after 3.96, on 870 MB of real files (an ISO, an installer, game data),
+three runs each, same bytes every time:
+
+| Build | `-m3f` | `-m5f` |
+|---|---|---|
+| as released (`-O3 -msse2`) | 2.35-2.73 s | 2.94-3.31 s |
+| `-march=x86-64-v2` | 2.44-2.74 s | 3.08-3.35 s |
+| `-march=x86-64-v3` (AVX2) | 2.42-2.59 s | 2.94-3.37 s |
+| `-O2` | 2.65-2.88 s | 3.04-3.14 s |
+| PGO (trained on -m1f/-m3/-m3f/-m5f) | 2.43-2.75 s | 2.98-3.20 s |
+
+All within noise. The VMAC digests of `-m3` are already computed by the background
+thread while the main thread works on the previous block, so they are off the
+critical path; what remains is the main loop, bound by memory latency (a random read
+of the bit array per position, then the hash table), not by instructions. It is
+sequential because every chunk enters the table while the same block is searched:
+splitting a block across threads would change which matches are found (still a valid
+archive, but other bytes). Nothing was changed.
 
 ## Limitation that remains, and is not fixable from here
 
