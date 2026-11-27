@@ -1,7 +1,7 @@
 # srep-builds
 
 Personal builds of **SREP**, the huge-dictionary LZ77 preprocessor by **Bulat
-Ziganshin**: version **3.96**, which is SREP 3.93a beta (October 11, 2014) with
+Ziganshin**: version **3.97**, which is SREP 3.93a beta (October 11, 2014) with
 fixes, more platforms and a newer command line. The archive format is unchanged.
 Built for [ytool](https://github.com/YadeWira/ytool), which runs srep as an
 external program for `-dd1`..`-dd5`.
@@ -16,6 +16,7 @@ external program for `-dd1`..`-dd5`.
 | Windows x64 | built in CI, tested under wine; real Windows 7 |
 | Windows x86 | built in CI, tested under wine; real Windows XP and 7 |
 | macOS arm64 | built and tested in CI (Apple Silicon runner) |
+| libsrep (library) | Linux x86-64/x86/arm64, Windows x64/x86, macOS; tested against the program |
 
 More in the [wiki](https://github.com/YadeWira/srep-builds/wiki): platforms, the command
 line, every fix and how it was measured.
@@ -77,6 +78,11 @@ memory than a 32-bit process has.
 
 ## What changed since 3.93a
 
+**3.97**
+- **libsrep**: srep as a library (`srep_run`, `build/lib/srep_lib.h`), the program's
+  command line inside another process, with the program's bytes and exit codes.
+  ytool uses it instead of starting srep when it is next to ytool.
+
 **3.96**
 - A failed run (an error, Ctrl+C, SIGTERM) leaves no output or temporary files.
 - Damaged archives always fail: fuzzing the decoder found two crashes, a damaged
@@ -126,7 +132,8 @@ bash build/build.sh arm64      # dist/srep-arm64    Linux arm64 (native, or aarc
 bash build/build.sh macos      # dist/srep-macos    macOS (on a Mac, clang)
 bash build/build.sh win64      # dist/srep.exe      Windows x64 (x86_64-w64-mingw32-g++)
 bash build/build.sh win32      # dist/srep-x86.exe  Windows x86 (i686-w64-mingw32-g++-posix)
-bash build/build.sh all        # everything but macos
+bash build/build.sh all        # everything but macos, libraries included
+bash build/build.sh lib        # dist/libsrep.so    (lib32, libarm64, libmacos, libwin64, libwin32)
 ```
 
 ## Test

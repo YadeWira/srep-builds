@@ -198,6 +198,29 @@ sequential because every chunk enters the table while the same block is searched
 splitting a block across threads would change which matches are found (still a valid
 archive, but other bytes). Nothing was changed.
 
+## 12. libsrep: srep inside another process (3.97)
+
+ytool starts srep as a program and talks to it through pipes. libsrep runs the same
+code in ytool's process (`srep_run`, srep's own command line), through the same three
+handles, so nothing else changes for the caller. What stood in the way, and what patch
+28 does about it, all under `SREP_LIB` (the program is unchanged):
+
+- `error()` ends with `exit()`: a damaged archive would end ytool. In the library it
+  throws; `srep_run` catches it and returns the exit code (4, as the program).
+- `-` is the process's stdin/stdout and messages go to stderr: in the library they are
+  the handles `srep_run` was given.
+- srep installs SIGINT/SIGTERM handlers and (3.96) ignores SIGPIPE: those belong to the
+  calling program, so the library does neither.
+- `--seed=` used `putenv`, the caller's environment: kept per call instead.
+- The seeded key was taken only while the PRNG was "not yet initialized": one process
+  running srep twice, unseeded and then seeded, ignored the seed. Fixed for both.
+- The registry of files to remove on an error (patch 20) is reset per call, and it also
+  closes the input (an open handle would keep the caller from deleting it on Windows).
+
+Calls are serialized (srep keeps global state). `tests/lib_test.c` checks the library
+against the program on every method: the same bytes with the same seed, files and
+pipes, a damaged archive returning 4 with nothing left behind, two threads at once.
+
 ## Limitation that remains, and is not fixable from here
 
 `-m1`, `-m2` and the other suffixes-less methods write an **index-LZ** footer (format

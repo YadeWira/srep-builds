@@ -2,6 +2,7 @@
 # Builds SREP 3.93a beta (Bulat Ziganshin) from this tree, for personal use.
 #
 #   bash build/build.sh [linux|linux32|arm64|macos|win64|win32|all]     (default: linux)
+#   bash build/build.sh [lib|lib32|libarm64|libmacos|libwin64|libwin32]  libsrep
 #
 # Outputs, in dist/ (gitignored):
 #   linux -> srep64   linux32 -> srep32   arm64 -> srep-arm64   macos -> srep-macos
@@ -115,6 +116,49 @@ build_win32() {
   build_windows "$cxx" "$CSRC/srep-build-x86" srep-x86.exe -static
 }
 
+# libsrep: srep as a library (build/lib/srep_lib.h), for programs that run it
+# in their own process instead of starting srep (ytool does when it finds the
+# library next to itself). Same patched source with SREP_LIB (patch 28).
+# $1 = compiler, $2 = scratch dir, $3 = output name, $4 = unix|win|mac, $5.. = flags
+build_lib() {
+  local cxx="$1" B="$2" out="$3" kind="$4"; shift 4
+  echo "==> libsrep ($out)"
+  command -v "$cxx" >/dev/null || { echo "   (falta $cxx)"; return 1; }
+  prepare "$B" || return 1
+  cp "$ROOT/build/lib/srep_lib.cpp" "$ROOT/build/lib/srep_lib.h" "$B/"
+  local inc="-ICompression -ICompression/_Encryption -ICompression/_Encryption/headers -ICompression/_Encryption/hashes -I."
+  case "$kind" in
+    unix)
+      ( cd "$B" && "$cxx" -O3 -funroll-all-loops -fPIC -shared -fvisibility=hidden $inc \
+          -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -D_FILE_OFFSET_BITS=64 \
+          -Wno-write-strings -Wno-unused-result "$@" Compression/Common.cpp srep_lib.cpp \
+          -lpthread -static-libstdc++ -static-libgcc -o "$OUT/$out" ) ;;
+    mac)
+      ( cd "$B" && "$cxx" -O3 -dynamiclib -fvisibility=hidden $inc \
+          -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -D_FILE_OFFSET_BITS=64 \
+          -Wno-write-strings -Wno-unused-result "$@" Compression/Common.cpp srep_lib.cpp \
+          -lpthread -lc++ -o "$OUT/$out" ) ;;
+    win)
+      cp "$ROOT/build/win32-threads/ThreadsWin32.h" "$ROOT/build/win32-threads/ThreadsWin32.c" \
+        "$B/Compression/LZMA2/C/"
+      cp "$ROOT/build/win32-threads/Handle.h" "$B/Compression/LZMA2/MultiThreading/"
+      ( cd "$B" && "$cxx" -O3 -std=c++17 -shared -I"$ROOT/build/mingw-shims" $inc \
+          -DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -D_FILE_OFFSET_BITS=64 -DUNICODE -D_UNICODE \
+          -Wno-write-strings -Wno-unused-result Compression/Common.cpp srep_lib.cpp \
+          "$@" -static-libgcc -static-libstdc++ -lole32 -luuid -o "$OUT/$out" ) ;;
+  esac && echo "   OK -> dist/$out" || { echo "   (build failed)"; return 1; }
+}
+build_lib_win32() {
+  local cxx=i686-w64-mingw32-g++-posix
+  command -v "$cxx" >/dev/null || cxx=i686-w64-mingw32-g++
+  build_lib "$cxx" "$CSRC/lib-build-x86" srep-x86.dll win -static
+}
+build_lib_arm64() {
+  local cxx=aarch64-linux-gnu-g++
+  [ "$(uname -m)" = aarch64 ] && cxx=g++
+  build_lib "$cxx" "$CSRC/lib-build-arm64" libsrep-arm64.so unix
+}
+
 case "$TARGET" in
   linux) build_linux || rc=1 ;;
   linux32) build_linux32 || rc=1 ;;
@@ -122,12 +166,23 @@ case "$TARGET" in
   macos) build_macos || rc=1 ;;
   win64) build_windows x86_64-w64-mingw32-g++ "$CSRC/srep-build-w64" srep.exe || rc=1 ;;
   win32) build_win32 || rc=1 ;;
+  lib) build_lib g++ "$CSRC/lib-build" libsrep.so unix -msse2 || rc=1 ;;
+  lib32) build_lib g++ "$CSRC/lib-build-32" libsrep32.so unix -m32 -msse2 || rc=1 ;;
+  libarm64) build_lib_arm64 || rc=1 ;;
+  libmacos) [ "$(uname -s)" = Darwin ] && build_lib clang++ "$CSRC/lib-build-macos" libsrep.dylib mac || { echo "   (solo en macOS)"; rc=1; } ;;
+  libwin64) build_lib x86_64-w64-mingw32-g++ "$CSRC/lib-build-w64" srep.dll win || rc=1 ;;
+  libwin32) build_lib_win32 || rc=1 ;;
   all)
     build_linux || rc=1
     build_linux32 || rc=1
     build_arm64 || rc=1
     build_windows x86_64-w64-mingw32-g++ "$CSRC/srep-build-w64" srep.exe || rc=1
-    build_win32 || rc=1 ;;
-  *) echo "uso: $0 [linux|linux32|arm64|macos|win64|win32|all]"; exit 2 ;;
+    build_win32 || rc=1
+    build_lib g++ "$CSRC/lib-build" libsrep.so unix -msse2 || rc=1
+    build_lib g++ "$CSRC/lib-build-32" libsrep32.so unix -m32 -msse2 || rc=1
+    build_lib_arm64 || rc=1
+    build_lib x86_64-w64-mingw32-g++ "$CSRC/lib-build-w64" srep.dll win || rc=1
+    build_lib_win32 || rc=1 ;;
+  *) echo "uso: $0 [linux|linux32|arm64|macos|win64|win32|lib|lib32|libarm64|libmacos|libwin64|libwin32|all]"; exit 2 ;;
 esac
 exit $rc

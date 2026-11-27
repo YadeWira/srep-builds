@@ -25,6 +25,12 @@ jobs:
         bash build/build.sh linux32
         bash build/build.sh win64
         bash build/build.sh win32
+    - name: Build libsrep (Linux x64, x86, Windows x64, x86)
+      run: |
+        bash build/build.sh lib
+        bash build/build.sh lib32
+        bash build/build.sh libwin64
+        bash build/build.sh libwin32
     - name: Test
       run: bash tests/run.sh
     - uses: actions/upload-artifact@v4
@@ -37,26 +43,34 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Build Linux arm64 (native)
-      run: bash build/build.sh arm64
+      run: |
+        bash build/build.sh arm64
+        bash build/build.sh libarm64
     - name: Test
       run: SREP=dist/srep-arm64 bash tests/run.sh
     - uses: actions/upload-artifact@v4
       with:
         name: srep-linux-arm64
-        path: dist/srep-arm64
+        path: |
+          dist/srep-arm64
+          dist/libsrep-arm64.so
 
   macos-arm64:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v4
     - name: Build macOS arm64
-      run: bash build/build.sh macos
+      run: |
+        bash build/build.sh macos
+        bash build/build.sh libmacos
     - name: Test
       run: SREP=dist/srep-macos FP_DIR=fp bash tests/run.sh
     - uses: actions/upload-artifact@v4
       with:
         name: srep-macos-arm64
-        path: dist/srep-macos
+        path: |
+          dist/srep-macos
+          dist/libsrep.dylib
     # macOS sorts ties in the second pass differently (libc++): its archives
     # are decoded by the other platforms' builds outside CI with these.
     - uses: actions/upload-artifact@v4

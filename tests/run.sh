@@ -200,7 +200,7 @@ $S64 -m3f -hash= "$W/one.bin" "$W/h.s" >/dev/null 2>&1 && bad "-hash= (empty) ac
 # wrong meaning. -s1.5 is still an interval.
 $S64 -m3f -s1e6 "$W/random1m.bin" "$W/s.s" >/dev/null 2>&1 && bad "-s1e6 accepted as an interval" || ok
 $S64 -m3f -s1.5 "$W/random1m.bin" "$W/s.s" >/dev/null 2>&1 && ok || bad "-s1.5 (interval) rejected"
-banner="$($S64 --version 2>&1)"; [[ "$banner" == "SREP 3.96"* ]] && ok || bad "version string"
+banner="$($S64 --version 2>&1)"; [[ "$banner" == "SREP 3.97"* ]] && ok || bad "version string"
 
 echo "== command line (patch 18)"
 $S64 --help 2>&1 | grep -q "Exit codes" && ok || bad "--help"
@@ -276,6 +276,28 @@ if [ "$QUICK" != quick ]; then
     bad "probe build failed"
   fi
 fi
+
+echo "== libsrep (build/lib): the library against the program"
+# srep_run inside this process: the program's archives byte for byte (same
+# seed), files and pipes, a damaged archive returning 4 without ending the
+# caller, a seed after an unseeded run, two threads at once.
+case "$(uname -s)/$(uname -m)" in
+  Linux/x86_64)  LIBPAIRS="libsrep.so:srep64: libsrep32.so:srep32:-m32" ;;
+  Linux/aarch64) LIBPAIRS="libsrep-arm64.so:srep-arm64:" ;;
+  Darwin/*)      LIBPAIRS="libsrep.dylib:srep-macos:" ;;
+  *)             LIBPAIRS="" ;;
+esac
+for pair in $LIBPAIRS; do
+  lib="${pair%%:*}"; rest="${pair#*:}"; prog="${rest%%:*}"; m="${rest#*:}"
+  [ -f "$DIST/$lib" ] && [ -x "$DIST/$prog" ] || continue
+  if gcc $m -O1 -o "$W/lib_test$m" "$ROOT/tests/lib_test.c" -ldl -lpthread 2>/dev/null; then
+    mkdir -p "$W/lt$m"
+    out="$("$W/lib_test$m" "$DIST/$lib" "$DIST/$prog" "$W/dups12m.bin" "$W/lt$m" 2>&1)"
+    if echo "$out" | grep -q '== [0-9]* OK, 0 FAIL'; then ok; else bad "$lib: $(echo "$out" | grep -E 'FAIL|dlopen' | head -3)"; fi
+  else
+    echo "   ($lib: no compiler for the test${m:+ ($m)})"
+  fi
+done
 
 echo "== golden archives (made by Linux x86-64, decoded here)"
 python3 - "$W" <<'PY'

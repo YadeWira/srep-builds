@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.97 — 2026-11-26
+
+Same archive format. New: **libsrep**, srep as a library.
+
+- `srep_run(argc, argv, in, out, err)` runs srep's own command line inside the
+  calling process (`build/lib/srep_lib.h`): the same options, archives and exit
+  codes, `-` meaning the handles given. Errors return their exit code instead of
+  ending the caller; the output and temporary files are removed as the program
+  does. Builds: `libsrep.so` (Linux x86-64, x86, arm64), `srep.dll` (Windows x64),
+  `srep-x86.dll` (Windows x86), `libsrep.dylib` (macOS).
+- ytool 0.9.9c uses it instead of starting srep when it finds it next to itself.
+- The library writes the program's bytes (same seed), and the tests check it
+  (`tests/lib_test.c`): files and pipes, a damaged archive returning 4, a seeded
+  run after an unseeded one, two threads at once.
+- Patch 28 makes the difference, all under `SREP_LIB`; the program is unchanged.
+
 ## 3.96 — 2026-11-26
 
 Same archive format as 3.93a, 3.94 and 3.95.

@@ -1073,13 +1073,183 @@ static void remove_partial_files (void)
         marker="Unsupported block checksum size",
     )
 
+    # --- 28. Library build (libsrep) ------------------------------------------
+    # 3.96. build/lib/srep_lib.cpp compiles srep into a library (srep_run:
+    # srep's own command line, in the calling process) for ytool to use
+    # instead of starting the program. Everything here is under SREP_LIB but
+    # two neutral changes; the program builds exactly as before.
+    #  - error() and the --help/--version exits throw instead of exit(), so a
+    #    damaged archive cannot end the calling program; srep_run catches it.
+    #  - "-" is the handles srep_run is given, not the process's stdin/stdout,
+    #    and stderr is the error handle it is given.
+    #  - no signal handlers and no SIGPIPE change: those belong to the caller.
+    #  - --seed= is kept for the call instead of putenv (the environment is
+    #    the caller's), and the input file is closed on an error (a handle
+    #    still open would keep the caller from deleting it on Windows).
+    #  - The seeded key no longer depends on the PRNG's "initialized" flag
+    #    (neutral for the program, which seeds once; a library run after an
+    #    unseeded one ignored its seed).
+    ok &= apply(
+        srep,
+        "lib: SREP_LIB macros",
+        """#include "Common.h"
+#ifdef _WIN32   // ytool patch: srep_getpid""",
+        """#include "Common.h"
+// ytool patch: library build (build/lib/srep_lib.cpp defines SREP_LIB)
+#ifdef SREP_LIB
+extern FILE *srep_lib_in, *srep_lib_out, *srep_lib_err;
+extern char srep_lib_seed[600];
+struct srep_lib_exit { int code; srep_lib_exit (int c) : code(c) {} };
+#undef stderr
+#define stderr        srep_lib_err
+#define SREP_STDIN    srep_lib_in
+#define SREP_STDOUT   srep_lib_out
+#define SREP_EXIT(c)  throw srep_lib_exit(c)
+#define SREP_SEED_SOURCE()  (srep_lib_seed[0]? (const char*)srep_lib_seed : getenv("SREP_SEED_HEX"))
+#else
+#define SREP_STDIN    stdin
+#define SREP_STDOUT   stdout
+#define SREP_EXIT(c)  exit(c)
+#define SREP_SEED_SOURCE()  getenv("SREP_SEED_HEX")
+#endif
+#ifdef _WIN32   // ytool patch: srep_getpid""",
+        marker="#define SREP_EXIT(c)",
+    )
+    ok &= apply(
+        io,
+        "lib: error() throws",
+        """  remove_partial_files();   // ytool patch: no partial output after an error
+  exit(ExitCode);""",
+        """  remove_partial_files();   // ytool patch: no partial output after an error
+  SREP_EXIT(ExitCode);   // ytool patch: a throw in the library build""",
+        marker="SREP_EXIT(ExitCode);",
+    )
+    src = read(srep)
+    if "SREP_EXIT (NO_ERRORS);" in src:
+        print("   = lib: help/version exits: already applied")
+    elif src.count("exit (NO_ERRORS);") == 2:
+        write(srep, src.replace("exit (NO_ERRORS);", "SREP_EXIT (NO_ERRORS);"))
+        print("   + lib: help/version exits")
+    else:
+        print("   ! lib: help/version exits: PATTERN NOT FOUND"); ok = False
+    ok &= apply(
+        srep,
+        "lib: input handle",
+        """  FILE *fin = strequ (finame, "-")? stdin : fopen (finame, "rb");""",
+        """  FILE *fin = strequ (finame, "-")? SREP_STDIN : fopen (finame, "rb");   // ytool patch: SREP_STDIN""",
+        marker="? SREP_STDIN : fopen",
+    )
+    ok &= apply(
+        srep,
+        "lib: output handle",
+        """  FILE *fout = strequ (foutname, "-")? stdout : fopen (foutname, "w+b");""",
+        """  FILE *fout = strequ (foutname, "-")? SREP_STDOUT : fopen (foutname, "w+b");   // ytool patch: SREP_STDOUT
+#ifdef SREP_LIB
+  if (fin != SREP_STDIN)  partial_fin = fin;   // closed if a run stops on an error
+#endif""",
+        marker="? SREP_STDOUT : fopen",
+    )
+    ok &= apply(
+        srep,
+        "lib: output not registered as a file",
+        """  if (fout != stdout && !strequ (foutname, NULL_FILENAME))  partial_fout = fout,  partial_out = foutname;""",
+        """  if (fout != SREP_STDOUT && !strequ (foutname, NULL_FILENAME))  partial_fout = fout,  partial_out = foutname;""",
+        marker="if (fout != SREP_STDOUT",
+    )
+    ok &= apply(
+        srep,
+        "lib: no signal handlers",
+        """  Install_signal_handler(signal_handler);
+""",
+        """#ifndef SREP_LIB   // ytool patch: the library leaves signals to the caller
+  Install_signal_handler(signal_handler);
+#endif
+""",
+        marker="the library leaves signals to the caller",
+    )
+    ok &= apply(
+        srep,
+        "lib: no SIGPIPE change",
+        """#ifdef SIGPIPE
+  signal (SIGPIPE, SIG_IGN);   // ytool patch: a closed pipe is a write error (exit 3)""",
+        """#if defined(SIGPIPE) && !defined(SREP_LIB)
+  signal (SIGPIPE, SIG_IGN);   // ytool patch: a closed pipe is a write error (exit 3)""",
+        marker="defined(SIGPIPE) && !defined(SREP_LIB)",
+    )
+    ok &= apply(
+        srep,
+        "lib: the caller's handles are not closed",
+        """  fclose(fin);
+  // ytool patch: a failed final flush (disk full, closed pipe) was exit 0
+  if (fclose(fout) != 0  &&  !errcode  &&  cmdmode!=INFORMATION)""",
+        """#ifdef SREP_LIB   // ytool patch: srep_run closes the handles it was given
+  if (fin != SREP_STDIN)  fclose(fin);
+  partial_fin = NULL;
+  if ((fout != SREP_STDOUT? fclose(fout) : fflush(fout)) != 0  &&  !errcode  &&  cmdmode!=INFORMATION)
+#else
+  fclose(fin);
+  // ytool patch: a failed final flush (disk full, closed pipe) was exit 0
+  if (fclose(fout) != 0  &&  !errcode  &&  cmdmode!=INFORMATION)
+#endif""",
+        marker="srep_run closes the handles it was given",
+    )
+    ok &= apply(
+        srep,
+        "lib: partial files registry resettable, input closed",
+        """static FILE *partial_fout = NULL, *partial_ftemp = NULL, *partial_fstat = NULL;""",
+        """static FILE *partial_fout = NULL, *partial_ftemp = NULL, *partial_fstat = NULL, *partial_fin = NULL;
+static volatile int partial_done = 0;   // reset by srep_run for each call""",
+        marker="*partial_fin = NULL;",
+    )
+    ok &= apply(
+        srep,
+        "lib: partial files: input closed, done flag global",
+        """  static volatile int done = 0;
+  if (done)  return;
+  done = 1;
+  // closed first: Windows cannot remove an open file""",
+        """  if (partial_done)  return;
+  partial_done = 1;
+  if (partial_fin)    fclose (partial_fin),  partial_fin = NULL;
+  // closed first: Windows cannot remove an open file""",
+        marker="if (partial_done)  return;",
+    )
+    ok &= apply(
+        srep,
+        "lib: --seed= kept for the call",
+        """      snprintf (seed_env, sizeof(seed_env), "SREP_SEED_HEX=%s", hex);
+      putenv (seed_env);""",
+        """#ifdef SREP_LIB   // ytool patch: not in the caller's environment
+      snprintf (srep_lib_seed, sizeof(srep_lib_seed), "%s", hex);
+      (void)seed_env;
+#else
+      snprintf (seed_env, sizeof(seed_env), "SREP_SEED_HEX=%s", hex);
+      putenv (seed_env);
+#endif""",
+        marker="not in the caller's environment",
+    )
+    src = read(hashes)
+    if "SREP_SEED_SOURCE()" in src:
+        print("   = lib: seed source: already applied")
+    else:
+        old = """  const char *env_seed = getenv("SREP_SEED_HEX");"""
+        o2 = """  if (!initialized && env_seed && *env_seed && strlen(env_seed) < 2*size)"""
+        o3 = """  if (!initialized && env_seed && strlen(env_seed) >= 2*size)"""
+        if old in src and o2 in src and o3 in src:
+            src = src.replace(old, """  const char *env_seed = SREP_SEED_SOURCE();   // ytool patch: --seed= in the library""")
+            src = src.replace(o2, """  if (env_seed && *env_seed && strlen(env_seed) < 2*size)""")
+            src = src.replace(o3, """  if (env_seed && strlen(env_seed) >= 2*size)   // ytool patch: not tied to "initialized\"""")
+            write(hashes, src); print("   + lib: seed source")
+        else:
+            print("   ! lib: seed source: PATTERN NOT FOUND"); ok = False
+
     # --- 14. Version ------------------------------------------------------------
     ok &= apply(
         srep,
-        "version: SREP 3.96",
+        "version: SREP 3.97",
         'char *program_version     = "SREP 3.93a beta", *program_date = "October 11, 2014";',
-        'char *program_version     = "SREP 3.96 (3.93a + ytool fixes)", *program_date = "November 26, 2026";',
-        marker="SREP 3.96",
+        'char *program_version     = "SREP 3.97 (3.93a + ytool fixes)", *program_date = "November 26, 2026";',
+        marker="SREP 3.97",
     )
 
     return 0 if ok else 1
