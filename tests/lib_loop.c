@@ -11,7 +11,7 @@
 #include <dlfcn.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <dirent.h>
+#include <sys/resource.h>
 #include <pthread.h>
 
 typedef int (*run_t)(int, char **, intptr_t, intptr_t, intptr_t);
@@ -19,17 +19,25 @@ static run_t srep_run;
 static int fails = 0, passes = 0;
 #define CHECK(c, ...) do { if (c) passes++; else { fails++; printf("FAIL: "); printf(__VA_ARGS__); printf("\n"); fflush(stdout); } } while (0)
 
+/* portable: no /proc on macOS */
 static int count_fds (void)
 {
-  int n = 0; DIR *d = opendir("/proc/self/fd"); struct dirent *e;
-  while ((e = readdir(d))) if (e->d_name[0] != '.') n++;
-  closedir(d); return n - 1;
+  int n = 0;
+  for (int fd = 0; fd < 4096; fd++) if (fcntl(fd, F_GETFD) != -1) n++;
+  return n;
 }
-static long rss_kb (void)
+static long rss_kb (void)   /* current RSS where /proc has it, else the peak (getrusage) */
 {
   FILE *f = fopen("/proc/self/status", "r"); char line[256]; long v = -1;
-  while (fgets(line, sizeof line, f)) if (!strncmp(line, "VmRSS:", 6)) v = atol(line + 6);
-  fclose(f); return v;
+  if (f) { while (fgets(line, sizeof line, f)) if (!strncmp(line, "VmRSS:", 6)) v = atol(line + 6); fclose(f); }
+  if (v < 0) { struct rusage u; getrusage(RUSAGE_SELF, &u);
+#ifdef __APPLE__
+    v = u.ru_maxrss / 1024;   /* bytes there */
+#else
+    v = u.ru_maxrss;
+#endif
+  }
+  return v;
 }
 static int files_equal (const char *a, const char *b)
 {
