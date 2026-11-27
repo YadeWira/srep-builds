@@ -54,7 +54,7 @@
                      "  -hash=NAME    one per block, NAME: %s [vmac]\n"
                      "  -hash-        none\n"
                      "  --seed=HEX    the hash key instead of a random one, so the same input gives\n"
-                     "                the same archive (vmac: 64 hex digits; also SREP_SEED_HEX)\n"
+                     "                the same archive (64 hex digits cover every hash; also SREP_SEED_HEX)\n"
                      "\n"
                      "Other:\n"
                      "  -d, --decompress   -i, --info   --verify   -h, --help   -V, --version\n"

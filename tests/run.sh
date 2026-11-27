@@ -161,6 +161,36 @@ wait $cp; rc=$?; rm -f "$W/chg.bin"
 if [ "$rc" = 0 ]; then echo "   (changed input: srep finished before the change, not checked)"
 else [ -e "$W/chg.s" ] && bad "changed input: archive left behind" || ok; fi
 
+echo "== damaged headers (patch 27; found by build/fuzz.py)"
+$S64 -m5 "$W/dups12m.bin" "$W/ix.s" >/dev/null 2>&1
+$S64 -m3f "$W/dups12m.bin" "$W/fl.s" >/dev/null 2>&1
+python3 - "$W" <<'PY'
+import sys, struct; d = sys.argv[1]
+def mod(src, dst, words):
+    b = bytearray(open(d + '/' + src, 'rb').read())
+    for i, v in words.items(): b[4*i:4*i+4] = struct.pack('<I', v)
+    open(d + '/' + dst, 'wb').write(b)
+# the first block header of an index-LZ archive zeroed: read as the end marker
+mod('ix.s', 'ix_zero.s', {12: 0, 13: 0})
+# the hash number in the archive header: checksums were silently turned off
+h = struct.unpack('<I', open(d + '/fl.s', 'rb').read()[8:12])[0]
+mod('fl.s', 'fl_hash.s', {2: (h & ~0xFF00) | (200 << 8)})
+# format v1 (rounded lengths) with a minimum match of 0: a division by zero
+mod('fl.s', 'fl_v1.s', {2: (h & ~0xFF) | 1, 3: 0})
+PY
+for g in ix_zero fl_hash fl_v1; do
+  $S64 -d "$W/$g.s" "$W/$g.out" >/dev/null 2>&1; rc=$?
+  [ "$rc" = 4 ] && ok || bad "$g: decode exit $rc, wanted 4"
+  [ -e "$W/$g.out" ] && bad "$g: output left behind" || ok
+done
+$S64 -d -hash- "$W/fl_hash.s" "$W/fl_hash.out" >/dev/null 2>&1 && cmp -s "$W/dups12m.bin" "$W/fl_hash.out" && ok \
+  || bad "-hash- does not decode an archive whose hash number is damaged"
+if [ -z "$QUICK" ]; then
+  # a short pass of the fuzzer on this build: no crash, no hang, no silent pass
+  python3 -I "$ROOT/build/fuzz.py" "$S64" "$W/fuzz" 600 > "$W/fuzz.log" 2>&1
+  grep -qE '^(crash|hang|silent|leftover) ' "$W/fuzz.log" && { bad "fuzz:"; grep -E '^(crash|hang|silent|leftover) ' "$W/fuzz.log" | head -5; } || ok
+fi
+
 echo "== options (patches 9, 12, 13)"
 $S64 -d -vmfile="$W/vm.tmp" -vmblock=1mb "$W/g.s" "$W/v.out" >/dev/null 2>&1 \
   && cmp -s "$W/dups12m.bin" "$W/v.out" && ok || bad "-vmfile=/-vmblock= not accepted"

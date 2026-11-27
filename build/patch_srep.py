@@ -836,7 +836,7 @@ static void remove_partial_files (void)
       bool good = n>0 && n%2==0;
       for (size_t i=0; good && i<n; i++)
         good = (hex[i]>='0' && hex[i]<='9') || (hex[i]>='a' && hex[i]<='f') || (hex[i]>='A' && hex[i]<='F');
-      if (!good)  error (ERROR_CMDLINE, "--seed= takes hex digits, an even number of them (64 for -hash=vmac): %s", hex);
+      if (!good)  error (ERROR_CMDLINE, "--seed= takes hex digits, an even number of them (64 for -hash=vmac; a longer seed gives its first bytes): %s", hex);
       static char seed_env[600];
       if (n > sizeof(seed_env)-20)  error (ERROR_CMDLINE, "--seed= is too long");
       snprintf (seed_env, sizeof(seed_env), "SREP_SEED_HEX=%s", hex);
@@ -883,10 +883,13 @@ static void remove_partial_files (void)
         """  const char *env_seed = getenv("SREP_SEED_HEX");
   if (!initialized && env_seed && strlen(env_seed) == 2*size)""",
         """  const char *env_seed = getenv("SREP_SEED_HEX");
-  if (!initialized && env_seed && *env_seed && strlen(env_seed) != 2*size)   // ytool patch (3.96): not ignored
-    error (ERROR_CMDLINE, "the seed (--seed= or SREP_SEED_HEX) must be %d hex digits for this hash", int(2*size));
-  if (!initialized && env_seed && strlen(env_seed) == 2*size)""",
-        marker="must be %d hex digits for this hash",
+  // ytool patch (3.96): a seed too short for this hash's key is an error (it
+  // was ignored: a random key, silently); a longer one gives its first bytes,
+  // so the 64 digits vmac takes also seed siphash's 16-byte key.
+  if (!initialized && env_seed && *env_seed && strlen(env_seed) < 2*size)
+    error (ERROR_CMDLINE, "the seed (--seed= or SREP_SEED_HEX) needs %d hex digits for this hash, it has %d", int(2*size), int(strlen(env_seed)));
+  if (!initialized && env_seed && strlen(env_seed) >= 2*size)""",
+        marker="a seed too short for this hash's key is an error",
     )
 
     # --- 24. Input and output are the same file, under different names --------
@@ -1000,6 +1003,74 @@ static void remove_partial_files (void)
   signal (SIGPIPE, SIG_IGN);   // ytool patch: a closed pipe is a write error (exit 3)
 #endif""",
         marker="a closed pipe is a write error",
+    )
+
+    # --- 27. Decoder: damaged archives fail, never crash or pass ---------------
+    # 3.96, found by fuzzing the decoder (20,000 mutated archives of every
+    # method, under ASan/UBSan; build/fuzz.py). Same format; only data that
+    # 3.93a's own encoder never writes is refused.
+    #  - A match of length 0 is the decoder's internal "block on disk" mark, so
+    #    one in the data sent restore_from_disk to a spill file that was never
+    #    opened (fseek on NULL) or saved 0 bytes into an invalid chunk.
+    #  - Format v1 rounds match lengths to BASE_LEN; a BASE_LEN of 0 divided by 0.
+    #  - Two zero words read as the end of the archive anywhere: a damaged block
+    #    header ended the decode early, exit 0 and a short (even empty) output.
+    #    The end now has to be where the archive ends: every index-LZ block
+    #    decoded, and future-LZ/I-O-LZ at the end of the file (it never writes
+    #    an end marker there).
+    #  - A damaged hash number or size in the header turned the checksums off
+    #    with one line on stderr and exit 0. Now an error; -hash- on decode is
+    #    the way to decode without checking.
+    ok &= apply(
+        decomp,
+        "decoder: a 0-length match is bad data",
+        """    if (lz_match.src<block_pos || lz_match.src>=block_end || lz_match.len>block_end-lz_match.src || lz_match.dest<=lz_match.src)  return false;    // Bad compressed data""",
+        """    if (lz_match.src<block_pos || lz_match.src>=block_end || lz_match.len>block_end-lz_match.src || lz_match.dest<=lz_match.src)  return false;    // Bad compressed data
+    if (lz_match.len == 0)  return false;   // ytool patch: 0 is the "block on disk" mark, never a real match""",
+        marker="never a real match",
+    )
+    ok &= apply(
+        srep,
+        "decoder: v1 with BASE_LEN 0",
+        """    const bool ROUND_MATCHES  =  (format_version == SREP_FORMAT_VERSION1);""",
+        """    const bool ROUND_MATCHES  =  (format_version == SREP_FORMAT_VERSION1);
+    if (ROUND_MATCHES && BASE_LEN==0)   // ytool patch: lengths are rounded to it, 0 divided by 0
+      error (ERROR_COMPRESSION, "Decompression problem: broken archive header (v1, minimum match 0) in file %s", finame);""",
+        marker="v1, minimum match 0",
+    )
+    ok &= apply(
+        srep,
+        "decoder: the end is where the archive ends",
+        """      if ((len==0  ||  len>=2*sizeof(STAT) && header[0]==0 && header[1]==0)  &&  lz_matches.size()==1)   {finished=true; goto print_decompression_stats;}""",
+        """      if ((len==0  ||  len>=2*sizeof(STAT) && header[0]==0 && header[1]==0)  &&  lz_matches.size()==1)
+      {
+        // ytool patch: a damaged block header of zeros ended the decode, exit 0
+        if (statsize_buf && statsize_ptr != statsize_end)
+          error (ERROR_COMPRESSION, "Decompression problem: the data ends %u blocks before the index in file %s", unsigned(statsize_end-statsize_ptr), finame);
+        if (!statsize_buf && len != 0)
+          error (ERROR_COMPRESSION, "Decompression problem: broken block header in file %s", finame);
+        if (!statsize_buf && !strequ(finame,"-") && compsize != filesize)
+          error (ERROR_COMPRESSION, "Decompression problem: the data ends before the end of file %s", finame);
+        finished=true; goto print_decompression_stats;
+      }""",
+        marker="a damaged block header of zeros ended the decode",
+    )
+    ok &= apply(
+        srep,
+        "decoder: unknown hash is an error",
+        """        fprintf (stderr, "Block checksums can't be checked since they are using unknown hash #%d-%d\\n", hash_num, hash_size*CHAR_BIT);
+        selected_hash = hash_by_name("", errcode);""",
+        """        // ytool patch: a damaged header turned the checksums off, exit 0
+        error (ERROR_COMPRESSION, "Unknown block checksum #%d-%d in file %s: a damaged archive, or not from this srep\\n  (-hash- decodes it without checking)", hash_num, hash_size*CHAR_BIT, finame);""",
+        marker="a damaged header turned the checksums off",
+    )
+    ok &= apply(
+        srep,
+        "decoder: unsupported hash size is an error",
+        """        fprintf (stderr, "Block checksums can't be checked since they are using unsupported hashsize %s-%s%d", selected_hash->hash_name, hash_seed_size?show3(hash_seed_size*CHAR_BIT,temp,"-"):"", hash_size*CHAR_BIT);
+        selected_hash = hash_by_name("", errcode);""",
+        """        error (ERROR_COMPRESSION, "Unsupported block checksum size %s-%s%d in file %s: a damaged archive, or not from this srep\\n  (-hash- decodes it without checking)", selected_hash->hash_name, hash_seed_size?show3(hash_seed_size*CHAR_BIT,temp,"-"):"", hash_size*CHAR_BIT, finame);   // ytool patch""",
+        marker="Unsupported block checksum size",
     )
 
     # --- 14. Version ------------------------------------------------------------
