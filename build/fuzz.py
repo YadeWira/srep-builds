@@ -74,7 +74,9 @@ def run_case(args):
     n, seedfile, method, inp_hash = args
     r = random.Random(n)
     data, kind = mutate(open(seedfile, "rb").read(), r)
-    d = os.path.join(WD, "w", str(n % 512)); os.makedirs(d, exist_ok=True)
+    # one folder per case (n % 512 was shared by cases running at once: one saw
+    # the other's temporary files as its own "leftover")
+    d = os.path.join(WD, "w", str(n)); shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
     arc = os.path.join(d, "m.srep"); out = os.path.join(d, "m.out")
     open(arc, "wb").write(data)
     results = []
@@ -115,6 +117,7 @@ def run_case(args):
             fh.write(f"seed method: {method}\nmutation: {kind}\n")
             for k, mode, rc, e in results:
                 fh.write(f"\n== {k} ({mode}) rc={rc}\n{e.decode('latin-1')}\n")
+    shutil.rmtree(d, ignore_errors=True)
     return n, method, kind, [(k, mode, rc) for k, mode, rc, _ in results]
 
 

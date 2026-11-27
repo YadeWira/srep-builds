@@ -221,6 +221,50 @@ Calls are serialized (srep keeps global state). `tests/lib_test.c` checks the li
 against the program on every method: the same bytes with the same seed, files and
 pipes, a damaged archive returning 4 with nothing left behind, two threads at once.
 
+## 13. What fuzzing the encoder found (3.98)
+
+`build/encfuzz.py` builds odd inputs (empty, a byte, block-boundary sizes, periodic,
+long repeats, mixed), picks random options (method and container, `-l`, `-c`, `-a`,
+`-b`, `-t`, hash, dictionary, `-index`, stdin) and requires the archive to decode to
+the input, by file, by pipe and with `--verify`, under ASan/UBSan. The first 2,000
+cases found 30 failures, most of them archives srep had written with exit 0 and
+could not decode. Upstream bugs, all of them:
+
+- `-m3` stores match lengths and offsets divided by BASE_LEN (`-l`, at most 512) but
+  rounds them to L (`-c`): with L not a multiple of BASE_LEN the rounding is lost
+  (patch 35). An L that is not a power of 2 broke `-m3` and `-m4`; L is now rounded
+  down to one, as `-m5` always did.
+- `-m1`/`-m2` subtract their own minimum (`-l`, raised to 16) from match lengths, the
+  header says `min(-l, -dl)`: past 512 or below 16 they differ (patch 37).
+- `-m3` precomputes digests of L-byte chunks at absolute positions; a block that is
+  not a multiple of L splits one (patch 43).
+- `-index=F`: index-LZ decode read the match list from the archive, where it is not
+  (patch 31); 3.96's end-of-data check counted the lists `-index` keeps apart (32); a
+  failed decode deleted the index, an input then (33).
+- Odd options: `-m5 -l<16` divided by a 0-byte slice (38); `-l<16` overran a match
+  list sized for 16-byte matches (39); `-aX/Y` outside 1, 2, 4..64 or above L had no
+  `compress<>` case or read before the buffer (40); `-b` without a unit is in MB and
+  wrapped past 4 GB (42).
+- UBSan: `lb(0)` (29), SipHash and VMAC loads and stores at any address (30, 34), and a
+  32-bit shift by 32 in the slice hash, which also turned real matches away (36).
+
+The decoder never knew the block size (`-b` is not in the archive): blocks above 8 MB
+needed the same `-b` to decode. It is read from the first block of a file now; a pipe
+cannot be read twice, so there the error says which `-b` to use (42). After the
+fixes, 5,500 more cases found nothing, and archives with options that worked before
+are byte-identical to 3.97's.
+
+## 14. libsrep over many calls (3.98)
+
+The program never frees: it ends. The library inherited that. `tests/lib_loop.c`
+calls `srep_run` round after round (11 methods, files and pipes, a damaged archive, a
+bad command line): RSS grew 120 MB per round, and every compression left a descriptor
+open (the input reopened for the second pass). Patch 41 gives each run an owner at the
+top of `main` that frees its buffers when `main` returns or an error unwinds it (the
+library's errors are exceptions); `CDC_Global` and the decoder's memory manager free
+their own; the second handle on the input is closed. 50 rounds: RSS flat, descriptors
+constant, LSan reports nothing.
+
 ## Limitation that remains, and is not fixable from here
 
 `-m1`, `-m2` and the other suffixes-less methods write an **index-LZ** footer (format

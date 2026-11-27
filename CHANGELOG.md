@@ -1,5 +1,40 @@
 # Changelog
 
+## 3.98 — 2026-11-27
+
+Same archive format. A bug-fix release: the encoder was fuzzed (random options
+on odd inputs, under ASan/UBSan) and the library was called many times in one
+process. What they found:
+
+- **Archives srep wrote and could not decode** ("broken compressed data",
+  "checksum ... is not the same"), every one an upstream bug:
+  `-m3` with `-c` smaller than `-l` (`-m3 -l256 -c16`); `-l` that is not a power of 2
+  with `-m3`/`-m4` (upstream printed "compressed file may be corrupt" and wrote it);
+  `-m1`/`-m2` with `-l` above 512 together with `-c` (`-m1f -l1000 -c256`); `-m3` with a
+  block size that is not a multiple of the chunk (`-b100000b`). Now L is a power of 2,
+  the rounded format is used only when it can hold the matches, CDC stores lengths
+  against its own minimum, and `-m3` blocks hold whole chunks.
+- **`-index=F` never worked** with the default index-LZ methods (decode looked for the
+  match list in the archive), and since 3.96 not with `f`/`o` either; a failed decode
+  deleted the index file. All fixed, files and pipes.
+- **Crashes and undefined behaviour on odd options**: `-m5` with `-l` below 16 (division
+  by zero), `-l1`..`-l15` (match list overrun), `-aX/Y` with Y not a power of 2, above 64
+  or above L (garbage, a 16 EB allocation, a read before the buffer), `-b` without a unit
+  past 4 GB (wrapped). And four UBSan reports: `lb(0)`, a 32-bit shift by 32 in the
+  slice hash (it also rejected real matches), unaligned loads in VMAC and SipHash.
+- **Blocks above 8 MB**: the archive does not record `-b`, so anything made with
+  `-b16mb` failed to decode without the same `-b`. Decode now reads the block size from
+  the file; through a pipe the error says which `-b` to give.
+- **libsrep, many calls in one process**: each call kept its buffers (RSS grew 120 MB per
+  round of 11 methods; 2.4 GB in 20 rounds) and a descriptor on the input. Now a call
+  frees everything it allocated, also when it fails: 50 rounds, RSS flat, no descriptor
+  left, LSan clean (`tests/lib_loop.c`).
+- Archives with the options that worked before are byte-identical to 3.97.
+- `build/encfuzz.py`: the encoder fuzzer; 5,500 cases after the fixes, nothing found.
+  `build/fuzz.py` gives each case its own folder (cases running at once shared one
+  and saw each other's temporary files as leftovers).
+  `tests/run.sh`: 330 checks.
+
 ## 3.97 — 2026-11-26
 
 Same archive format. New: **libsrep**, srep as a library.

@@ -200,7 +200,7 @@ $S64 -m3f -hash= "$W/one.bin" "$W/h.s" >/dev/null 2>&1 && bad "-hash= (empty) ac
 # wrong meaning. -s1.5 is still an interval.
 $S64 -m3f -s1e6 "$W/random1m.bin" "$W/s.s" >/dev/null 2>&1 && bad "-s1e6 accepted as an interval" || ok
 $S64 -m3f -s1.5 "$W/random1m.bin" "$W/s.s" >/dev/null 2>&1 && ok || bad "-s1.5 (interval) rejected"
-banner="$($S64 --version 2>&1)"; [[ "$banner" == "SREP 3.97"* ]] && ok || bad "version string"
+banner="$($S64 --version 2>&1)"; [[ "$banner" == "SREP 3.98"* ]] && ok || bad "version string"
 
 echo "== command line (patch 18)"
 $S64 --help 2>&1 | grep -q "Exit codes" && ok || bad "--help"
@@ -297,7 +297,43 @@ for pair in $LIBPAIRS; do
   else
     echo "   ($lib: no compiler for the test${m:+ ($m)})"
   fi
+  # many calls in one process (patch 41): round trips, damaged archives, bad
+  # command lines; no descriptor left open, RSS stable
+  if gcc $m -O1 -o "$W/lib_loop$m" "$ROOT/tests/lib_loop.c" -ldl -lpthread 2>/dev/null; then
+    mkdir -p "$W/ll$m"; head -c 1200000 "$W/dups12m.bin" > "$W/loop.bin"
+    out="$("$W/lib_loop$m" "$DIST/$lib" "$W/loop.bin" "$W/ll$m" 5 2>&1)"
+    if echo "$out" | grep -q '== [0-9]* OK, 0 FAIL'; then ok; else bad "$lib loop: $(echo "$out" | grep -E 'FAIL|dlopen' | head -3)"; fi
+  fi
 done
+
+echo "== options that wrote archives srep could not decode (patches 31, 32, 35, 37, 39, 40, 42, 43)"
+# -l/-c pairs -m3 rounded wrongly, -l not a power of 2, CDC above -dl, tiny -l,
+# -a outside the compress<> cases: each one was "broken compressed data" or a crash
+for o in "-m3 -l256 -c16" "-m3 -l512 -c64" "-m3f -l64 -c32" "-m3 -l100" "-m4 -l100" "-m3 -l1024 -c256" \
+         "-m1f -l1000 -c256" "-m2 -l513 -c64" "-m1 -l8 -c64" "-m3 -l1" "-m5 -l8" "-m5f -l1" "-m4 -l4" \
+         "-m3 -a4/3" "-m3 -a4/128" "-m5o -l17 -a16 -b256k" "-m4 -l16 -a64/64" \
+         "-m3 -b100000b" "-m3f -b65537b" "-m3 -b16mb" "-m3o -b32mb" "-m5f -b9mb"; do
+  rt "$S64" "$S64" "$o" dups12m.bin
+done
+# -b without a unit is mb; 100000mb wrapped the 32-bit size (patch 42)
+rm -f "$W/a.s" "$W/a.out"; $S64 -m3 -b100000 "$W/far.bin" "$W/a.s" >/dev/null 2>&1; [ $? -eq 2 ] && [ ! -f "$W/a.s" ] && ok || bad "-b100000 (mb) is refused"
+# blocks above 8mb through a pipe: the error names the -b to use (patch 42)
+rm -f "$W/a.s"; $S64 -m3f -b16mb "$W/dups12m.bin" "$W/a.s" >/dev/null 2>&1
+hint="$($S64 -d - - < "$W/a.s" 2>&1 >/dev/null)"   # exit 4 by design: not in a pipeline (pipefail)
+echo "$hint" | grep -q 'decode with that -b' && ok || bad "-b16mb through a pipe: no hint"
+$S64 -d -b16mb - - < "$W/a.s" > "$W/a.out" 2>/dev/null && cmp -s "$W/dups12m.bin" "$W/a.out" && ok || bad "-b16mb through a pipe with -b16mb"
+# -index (patches 31-33): every container, files and pipes; a failed decode keeps the index
+for m in -m0 -m1 -m3 -m5 -m1f -m3f -m5f -m3o -m5o; do
+  rm -f "$W/a.s" "$W/a.out" "$W/a.idx"
+  $S64 $m -index="$W/a.idx" "$W/far.bin" "$W/a.s" >/dev/null 2>&1 \
+    && $S64 -d -index="$W/a.idx" "$W/a.s" "$W/a.out" >/dev/null 2>&1 && cmp -s "$W/far.bin" "$W/a.out" && ok \
+    || bad "-index $m: files"
+  case $m in *f) $S64 -d -index="$W/a.idx" - - < "$W/a.s" > "$W/a.out" 2>/dev/null && cmp -s "$W/far.bin" "$W/a.out" && ok \
+    || bad "-index $m: pipes" ;; esac
+done
+head -c $(( $(wc -c < "$W/a.idx") / 2 )) "$W/a.idx" > "$W/b.idx"; mv "$W/b.idx" "$W/a.idx"
+$S64 -d -index="$W/a.idx" "$W/a.s" "$W/a.out" >/dev/null 2>&1
+[ $? -ne 0 ] && [ -f "$W/a.idx" ] && [ ! -f "$W/a.out" ] && ok || bad "-index: a short index fails, keeps the index, leaves no output"
 
 echo "== golden archives (made by Linux x86-64, decoded here)"
 python3 - "$W" <<'PY'

@@ -33,7 +33,7 @@ extern "C" {
 SREP_API int srep_run (int argc, char **argv, intptr_t in_handle,
                        intptr_t out_handle, intptr_t err_handle);
 
-/* "SREP 3.97 (3.93a + ytool fixes)" */
+/* "SREP 3.98 (3.93a + ytool fixes)" */
 SREP_API const char *srep_version (void);
 
 #ifdef __cplusplus

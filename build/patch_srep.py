@@ -1243,13 +1243,377 @@ static volatile int partial_done = 0;   // reset by srep_run for each call""",
         else:
             print("   ! lib: seed source: PATTERN NOT FOUND"); ok = False
 
+    # --- 29. lb(0) when there is no bit array ---------------------------------
+    # Origin: UBSan in the 3.98 encoder fuzz. With BITARR_ACCELERATOR 0 (-a0)
+    # or content-defined chunking, bitarrsize is 0 and lb(0) calls
+    # __builtin_clzll(0), which is undefined (bitshift is unused then, but the
+    # compiler may assume n != 0 elsewhere in the inlined lb()).
+    hash_table = os.path.join(root, "Compression/SREP/hash_table.cpp")
+    ok &= apply(
+        hash_table,
+        "lb(0) without a bit array",
+        "    bitshift = sizeof(HashValue)*CHAR_BIT - lb(bitarrsize);",
+        "    bitshift = bitarrsize? sizeof(HashValue)*CHAR_BIT - lb(bitarrsize) : 0;   // ytool patch: lb(0) is undefined",
+        marker="ytool patch: lb(0) is undefined",
+    )
+
+    # --- 30. siphash result stored unaligned -----------------------------------
+    # Origin: UBSan in the 3.98 encoder fuzz (-hash=siphash). The digest buffer
+    # is not 8-byte aligned; a direct uint64_t store is undefined and traps on
+    # strict-alignment CPUs. memcpy is the same store on x86.
+    ok &= apply(
+        hashes,
+        "siphash unaligned store",
+        "  *(uint64_t*)result = siphash ((unsigned char *)key, (const unsigned char *)buf, size);",
+        "  uint64_t h = siphash ((unsigned char *)key, (const unsigned char *)buf, size);\n  memcpy (result, &h, sizeof(h));   // ytool patch: result is not aligned",
+        marker="ytool patch: result is not aligned",
+    )
+
+    # --- 31. -index with index-LZ (the default -m0..-m5) ----------------------
+    # Origin: the 3.98 encoder fuzz. Compression writes the match list to the
+    # -index file, but index-LZ decode read it from the end of the archive,
+    # where it is not: "broken compressed data" on every such archive. Never
+    # worked upstream. Decode now reads the match list from the index file and
+    # leaves it out of the archive's size accounting.
+    ok &= apply(
+        srep,
+        "-index with index-LZ: size accounting",
+        "      compsize += footer_size+stat_size;",
+        "      compsize += footer_size + (*index_file? 0 : stat_size);   // ytool patch: the match list is in the -index file",
+        marker="the match list is in the -index file",
+    )
+    ok &= apply(
+        srep,
+        "-index with index-LZ: read the match list from the index file",
+        """      file_seek (fin, filesize-footer_size-stat_size);
+      checked_file_read (fin, statbuf, stat_size);""",
+        """      if (*index_file)   // ytool patch: -index keeps the match list apart
+      {
+        if (file_read (fstat, statbuf, stat_size) != stat_size)
+          error (ERROR_COMPRESSION, "Decompression problem: the index file %s is shorter than the archive says", index_file);
+        file_seek (fin, filesize-footer_size);
+      }
+      else
+      {
+        file_seek (fin, filesize-footer_size-stat_size);
+        checked_file_read (fin, statbuf, stat_size);
+      }""",
+        marker="-index keeps the match list apart",
+    )
+    ok &= apply(
+        srep,
+        "-index with index-LZ: -i size",
+        "        origsize = filesize-footer_size-stat_size-full_archive_header_size-total_blocks*header_size;   // compute literal bytes",
+        "        origsize = filesize-footer_size-(*index_file? 0 : stat_size)-full_archive_header_size-total_blocks*header_size;   // compute literal bytes (ytool patch: -index)",
+        marker="(ytool patch: -index)",
+    )
+
+    # --- 32. -index with future-LZ / I/O-LZ: the end-of-data check -------------
+    # Origin: the 3.98 encoder fuzz; a 3.96 regression. Patch 27 compares the
+    # bytes read with the archive size, but the count included the match lists,
+    # which -index keeps in its own file: every -m?f/-m?o archive made with
+    # -index failed with "the data ends before the end of file".
+    ok &= apply(
+        srep,
+        "-index: archive bytes exclude the match lists",
+        "      compsize += header_size + compsize1;",
+        "      compsize += header_size + compsize1 - (*index_file? statsize1 : 0);   // ytool patch: -index keeps the match lists apart",
+        marker="-index keeps the match lists apart",
+    )
+
+    # --- 33. A failed decode deleted the -index file ---------------------------
+    # Origin: reading the cleanup code for patch 31. On a decompression error
+    # srep removed index_file, which is then an input, not something it made.
+    ok &= apply(
+        srep,
+        "failed decode keeps the -index file",
+        """    if (index_file)
+      remove(index_file);""",
+        """    if (*index_file && cmdmode==COMPRESSION)   // ytool patch: on decode it is an input
+      remove(index_file);""",
+        marker="on decode it is an input",
+    )
+
+    # --- 34. VMAC reads the message unaligned --------------------------------
+    # Origin: UBSan in the 3.98 encoder fuzz (-m1/-m2: content-defined chunks
+    # start at any byte). get64LE dereferenced a uint64_t* at any address:
+    # undefined, and a trap on strict-alignment CPUs. memcpy compiles to the
+    # same single load on x86-64 and arm64; the hash values do not change.
+    ok &= apply(
+        vmac,
+        "VMAC unaligned message loads",
+        "#  define get64LE(ptr) (*(uint64_t *)(ptr))\n#endif",
+        "#  define get64LE(ptr) vmac_load64(ptr)   /* ytool patch: unaligned */\n#endif",
+        marker="vmac_load64(ptr)",
+    )
+    ok &= apply(
+        vmac,
+        "VMAC unaligned message loads: helper",
+        "#if (VMAC_PREFER_BIG_ENDIAN)\n#  define get64PE get64BE",
+        "static inline uint64_t vmac_load64 (const void *p) { uint64_t v; memcpy (&v, p, 8); return v; }   /* ytool patch */\n\n#if (VMAC_PREFER_BIG_ENDIAN)\n#  define get64PE get64BE",
+        marker="vmac_load64 (const void *p)",
+    )
+
+    # --- 35. -l/-c that made archives srep could not decode -------------------
+    # Origin: the 3.98 encoder fuzz; upstream bug. -m3 rounds match lengths to
+    # multiples of L (the chunk, -c) but stores offsets and lengths divided by
+    # BASE_LEN (-l, at most 512): unless L is a multiple of BASE_LEN the archive
+    # is "broken compressed data" (-m3 -l256 -c16, -m3f -l64 -c32). And an L
+    # that is not a power of 2 broke -m3 and -m4 alike; upstream only printed
+    # "compressed file may be corrupt" and wrote it. Now L is rounded down to a
+    # power of 2 (as -m5 always did) and the rounded format is used only when
+    # it can hold the matches; otherwise the exact-length one (as -m3 with -d).
+    # Defaults and every -l/-c power-of-2 pair that worked give the same bytes.
+    ok &= apply(
+        srep,
+        "ROUND_MATCHES decided after L",
+        "  const bool ROUND_MATCHES             =  (method == SREP_METHOD3) && (dictsize==0);",
+        "  bool       ROUND_MATCHES             =  (method == SREP_METHOD3) && (dictsize==0);   // ytool patch: may be turned off below",
+        marker="may be turned off below",
+    )
+    ok &= apply(
+        srep,
+        "-l/-c: L a power of 2, rounded format only when it fits",
+        """  if (L!=roundup_to_power_of(L,2) && !CONTENT_DEFINED_CHUNKING) {
+    fprintf (stderr, "Warning: -l parameter should be power of 2, otherwise compressed file may be corrupt\\n");
+    warnings++;
+  }""",
+        """  // ytool patch: these combinations wrote archives that do not decode
+  if (L!=roundup_to_power_of(L,2) && !CONTENT_DEFINED_CHUNKING)
+    L = rounddown_to_power_of(L,2);
+  if (ROUND_MATCHES  &&  (L % BASE_LEN != 0  ||  bufsize % L != 0))
+    ROUND_MATCHES = false;""",
+        marker="these combinations wrote archives that do not decode",
+    )
+
+    # --- 36. SliceHash::check looked past its 8 slices ------------------------
+    # Origin: UBSan in the 3.98 encoder fuzz ("shift exponent 32"). With -c
+    # much smaller than -l, check_slices exceeds the 8 slices one entry holds:
+    # it shifted by >= 32 and compared bits that do not exist, rejecting real
+    # matches (worse compression, not damage). Capped at slices_in_block: the
+    # check can only let more candidates through, and each is verified anyway.
+    # Defaults never reach the cap.
+    hash_table = os.path.join(root, "Compression/SREP/hash_table.cpp")
+    ok &= apply(
+        hash_table,
+        "SliceHash check bounded to one entry",
+        "    check_slices    = int((MIN_MATCH-L)/slice_size) - io_accelerator;",
+        "    check_slices    = int((MIN_MATCH-L)/slice_size) - io_accelerator;\n    if (check_slices > int(slices_in_block))  check_slices = slices_in_block;   // ytool patch: one entry holds slices_in_block",
+        marker="one entry holds slices_in_block",
+    )
+
+    # --- 37. -m1/-m2 with -l above 512 or below 16 ---------------------------
+    # Origin: the 3.98 encoder fuzz; upstream bug. Content-defined chunking
+    # stores match lengths minus its MIN_MATCH (-l, raised to 16), but the
+    # header says BASE_LEN = min(-l, -dl 512) and decode subtracts that: with
+    # -l1000 -c256 (or -l8) every archive was "broken compressed data". -m1/-m2
+    # take no dictionary, so -dl means nothing there: BASE_LEN is the
+    # chunker's own minimum. -l16..512 (the defaults too) give the same bytes.
+    ok &= apply(
+        srep,
+        "CDC: BASE_LEN is the chunker's minimum match",
+        "  unsigned BASE_LEN  =  mymin (min_match, dict_min_match);    // Guaranteed minimum match length, so lengths in STAT are encoded minus this value",
+        "  unsigned BASE_LEN  =  CONTENT_DEFINED_CHUNKING? mymax (min_match, unsigned(MINIMAL_MIN_MATCH))   // ytool patch: what compress_CDC subtracts\n                                                 : mymin (min_match, dict_min_match);    // Guaranteed minimum match length, so lengths in STAT are encoded minus this value",
+        marker="what compress_CDC subtracts",
+    )
+
+    # --- 38. -m5 with -l below 16: division by zero --------------------------
+    # Origin: the 3.98 encoder fuzz. -m5 uses L = -l/2; below 8 bytes the slice
+    # (L/8) is 0 and SliceHash divided by it (SIGFPE, an empty output left).
+    # No slice to hash means no SliceHash, as when it is not needed.
+    ok &= apply(
+        hash_table,
+        "SliceHash with slices of 0 bytes",
+        "    check_slices    = int((MIN_MATCH-L)/slice_size) - io_accelerator;\n",
+        "    check_slices    = slice_size? int((MIN_MATCH-L)/slice_size) - io_accelerator : 0;   // ytool patch: L < slices_in_block\n",
+        marker="L < slices_in_block",
+    )
+
+    # --- 39. -l and -dl below 16 overran the match list ----------------------
+    # Origin: ASan in the 3.98 encoder fuzz ("-m3 -l1": store past the end in
+    # the second pass). The per-block match list holds bufsize/16 matches,
+    # i.e. it assumes matches of MINIMAL_MIN_MATCH (16) bytes or more; -l1..15
+    # (and -dl) let more in. Raised to 16 as the -m1/-m2 chunker already does.
+    ok &= apply(
+        srep,
+        "-l/-dl at least MINIMAL_MIN_MATCH",
+        "  if (!L) {\n    if (CONTENT_DEFINED_CHUNKING)",
+        "  // ytool patch: the match lists are sized for matches of 16 bytes or more\n"
+        "  if (!CONTENT_DEFINED_CHUNKING && min_match && min_match < MINIMAL_MIN_MATCH)  min_match = MINIMAL_MIN_MATCH;\n"
+        "  if (dict_min_match && dict_min_match < MINIMAL_MIN_MATCH)  dict_min_match = MINIMAL_MIN_MATCH;\n"
+        "  if (!L) {\n    if (CONTENT_DEFINED_CHUNKING)",
+        marker="sized for matches of 16 bytes or more",
+    )
+
+    # --- 40. -a<X>/<Y> outside what compress<> handles ------------------------
+    # Origin: ASan in the 3.98 encoder fuzz. The main loop is compress<Y> for
+    # Y = 0, 1, 2, 4 .. 64, and its first hash covers L-(Y-1) bytes. Y not a
+    # power of 2 or above 64 matched no case (garbage match list: -a4/3 asked
+    # for 16 EB, -a4/128 overran), and Y > L read before the buffer (-m5 -l17
+    # -a16: L is 8). Y is rounded down to a power of 2, at most 64 and L.
+    # Defaults are within all three limits.
+    ok &= apply(
+        srep,
+        "-a: main-loop accelerator within compress<> cases",
+        "  if (ACCELERATOR==9000)   ACCELERATOR  =  mymin(accel,16);",
+        "  if (ACCELERATOR==9000)   ACCELERATOR  =  mymin(accel,16);\n"
+        "  // ytool patch: compress<> exists for 0, 1, 2, 4 .. 64 and hashes L-(ACCELERATOR-1) bytes\n"
+        "  if (ACCELERATOR > 64)  ACCELERATOR = 64;\n"
+        "  if (ACCELERATOR && ACCELERATOR != roundup_to_power_of(ACCELERATOR,2))  ACCELERATOR = rounddown_to_power_of(ACCELERATOR,2);\n"
+        "  while (ACCELERATOR > 1 && ACCELERATOR > L)  ACCELERATOR /= 2;",
+        marker="compress<> exists for 0, 1, 2, 4 .. 64",
+    )
+
+    # --- 41. One run frees what it allocated (libsrep: many runs, one process) --
+    # Origin: the 3.98 library loop (tests/lib_loop.c). The program never frees:
+    # the process ends. In libsrep every call kept its buffers (about 120 MB of
+    # RSS per round of 11 methods, 990 MB under LSan) and its second handle on
+    # the input file (one descriptor per compression). Each big allocation of
+    # a run is now owned by an object at the top of main, freed when main
+    # returns or an error unwinds it; CDC_Global and MEMORY_MANAGER free their
+    # own; the input reopened for the second pass is closed.
+    def patch41():
+        src = read(srep)
+        if "SrepOwned srep_owned_run" in src:
+            print("   = one run frees what it allocated: already applied"); return True
+        reps = [
+            ('#include "MultiThreading.cpp"\n',
+             '#include "MultiThreading.cpp"\n'
+             '#include <vector>\n'
+             '// ytool patch: what one run allocates, freed when it ends (libsrep runs many in one process)\n'
+             'struct SrepOwned;\n'
+             'static SrepOwned *srep_owned = NULL;\n'
+             'struct SrepOwned {\n'
+             '  struct Item { void *p; void (*del)(void*); };\n'
+             '  std::vector<Item> items;\n'
+             '  SrepOwned()  {srep_owned = this;}\n'
+             '  ~SrepOwned() {for (size_t i = items.size(); i-- > 0; )  items[i].del(items[i].p);  srep_owned = NULL;}\n'
+             '};\n'
+             'template <class T> static T *srep_own_array (T *p)  {if (p && srep_owned) srep_owned->items.push_back(SrepOwned::Item{p, [](void *q){delete[] (T*)q;}});  return p;}\n'
+             'template <class T> static T *srep_own_object (T *p) {if (p && srep_owned) srep_owned->items.push_back(SrepOwned::Item{p, [](void *q){delete (T*)q;}});  return p;}\n'
+             'static void *srep_own_malloc (void *p)              {if (p && srep_owned) srep_owned->items.push_back(SrepOwned::Item{p, [](void *q){free(q);}});  return p;}\n'),
+            ('int main (int argc, char **argv)\n{\n',
+             'int main (int argc, char **argv)\n{\n  SrepOwned srep_owned_run;   // ytool patch: frees this run\'s buffers\n'),
+            ('    void *seed = malloc(selected_hash->hash_seed_size);',
+             '    void *seed = srep_own_malloc (malloc(selected_hash->hash_seed_size));'),
+            ('      hash_obj = selected_hash->new_hash (seed, selected_hash->hash_seed_size);',
+             '      hash_obj = selected_hash->new_hash (seed, selected_hash->hash_seed_size);\n'
+             '      if (selected_hash->new_hash == new_vhash)  srep_own_object ((VHash*)hash_obj);  else srep_own_malloc (hash_obj);'),
+            ('      hash_obj = selected_hash->new_hash (header, hash_seed_size);',
+             '      hash_obj = selected_hash->new_hash (header, hash_seed_size);\n'
+             '      if (selected_hash->new_hash == new_vhash)  srep_own_object ((VHash*)hash_obj);  else srep_own_malloc (hash_obj);'),
+            ('(COMPRESSED_BLOCK *) new char[blocksize];', '(COMPRESSED_BLOCK *) srep_own_array (new char[blocksize]);'),
+            ('      char *buf     = new char[bufsize+1];', '      char *buf     = srep_own_array (new char[bufsize+1]);'),
+            ('      char *outbuf  = new char[bufsize], *out;', '      char *outbuf  = srep_own_array (new char[bufsize]), *out;'),
+            ('      STAT *statbuf = new STAT[FUTURELZ_MAX_STATS_PER_BLOCK(bufsize)], *stat;',
+             '      STAT *statbuf = srep_own_array (new STAT[FUTURELZ_MAX_STATS_PER_BLOCK(bufsize)]), *stat;'),
+            ('      LZ_MATCH *lz_matches = new LZ_MATCH[lz_matches_count+1];',
+             '      LZ_MATCH *lz_matches = srep_own_array (new LZ_MATCH[lz_matches_count+1]);'),
+            ('      STAT *statsize_buf = new STAT[total_blocks],  *statsize_ptr = statsize_buf;',
+             '      STAT *statsize_buf = srep_own_array (new STAT[total_blocks]),  *statsize_ptr = statsize_buf;'),
+            ('    char *buf     = new char[compbufsize];', '    char *buf     = srep_own_array (new char[compbufsize]);'),
+            ('    char *out     = new char[bufsize];', '    char *out     = srep_own_array (new char[bufsize]);'),
+            ('      statbuf = statptr = new STAT[stats_count];', '      statbuf = statptr = srep_own_array (new STAT[stats_count]);'),
+            ('      statsize_buf = statsize_ptr = new STAT[total_blocks];', '      statsize_buf = statsize_ptr = srep_own_array (new STAT[total_blocks]);'),
+            ('  if (tempfile && *tempfile)\n    fclose(ftemp),\n    remove(tempfile);',
+             '  if (tempfile && *tempfile)\n    fclose(ftemp),\n    remove(tempfile);\n'
+             '  else if (ftemp && ftemp!=fin && ftemp!=fout)   // ytool patch: the input reopened for the second pass\n'
+             '    fclose(ftemp);'),
+        ]
+        for old, new in reps:
+            n = src.count(old)
+            if n != 1:
+                print(f"   ! one run frees: {n} matches for {old[:60]!r}"); return False
+            src = src.replace(old, new)
+        write(srep, src)
+        cdc = os.path.join(root, "Compression/SREP/compress_cdc.cpp")
+        c = read(cdc)
+        o1 = "    CONTENT_DEFINED_CHUNKING = _CONTENT_DEFINED_CHUNKING;  errcode = NO_ERRORS;\n"
+        o2 = "  ~CDC_Global()  {if (CONTENT_DEFINED_CHUNKING && errcode==NO_ERRORS)  Threads.finish();}"
+        if c.count(o1) != 1 or c.count(o2) != 1:
+            print("   ! one run frees: CDC_Global pattern"); return False
+        c = c.replace(o1, o1 + "    ThreadStorage = NULL;   // ytool patch\n")
+        c = c.replace(o2, "  ~CDC_Global()  {if (CONTENT_DEFINED_CHUNKING && errcode==NO_ERRORS)  Threads.finish();  delete[] ThreadStorage;}   // ytool patch: freed")
+        write(cdc, c)
+        dec = os.path.join(root, "Compression/SREP/decompress.cpp")
+        d = read(dec)
+        o3 = "  Offset max_mem()                   {return block_addr.size()*aBLOCK_SIZE;}"
+        if d.count(o3) != 1:
+            print("   ! one run frees: MEMORY_MANAGER pattern"); return False
+        d = d.replace(o3, "  ~MEMORY_MANAGER()                  {for (size_t i=0; i<block_addr.size(); i++)  delete[] block_addr[i];}   // ytool patch: freed\n" + o3)
+        write(dec, d)
+        print("   + one run frees what it allocated")
+        return True
+    ok &= patch41()
+
+    # --- 42. Block sizes: -b overflow, and decode needing the same -b ---------
+    # Origin: the 3.98 suite (-m3 -b100000). -b has no unit = megabytes, and the
+    # 32-bit block size wrapped (100000mb): an archive no decoder accepted.
+    # And the block size is not in the archive: anything made with -b above
+    # 8mb failed to decode unless the same -b was given ("maximum supported
+    # size is 8388608 bytes"). -b is now at most 1gb; decode reads the first
+    # block's size from a file before allocating (up to 1gb, so damage cannot
+    # ask for more); through a pipe, the error says which -b to use.
+    ok &= apply(
+        srep,
+        "-b at most 1gb",
+        "      bufsize = parseMem (argv[1]+2, &errcode, 'm');",
+        "      {LongMemSize b = parseMem64 (argv[1]+2, &errcode, 'm');   // ytool patch: the 32-bit size wrapped\n"
+        "       if (!errcode && (b > LongMemSize(1)*gb || b == 0))  error (ERROR_CMDLINE, \"-b: the block size is 1 byte .. 1gb (no unit = mb)\");\n"
+        "       bufsize = unsigned(b);}",
+        marker="the 32-bit size wrapped",
+    )
+    ok &= apply(
+        srep,
+        "decode: block size from the first block",
+        "    unsigned compbufsize = bufsize + sizeof(STAT)*(MAX_HEADER_SIZE+MAX_HASH_SIZE+FUTURELZ_MAX_STATS_PER_BLOCK(bufsize));\n    char *buf     = srep_own_array (new char[compbufsize]);",
+        "    // ytool patch: the archive does not record -b; a file tells it in its first block\n"
+        "    if (!strequ(finame,\"-\"))\n"
+        "    {\n"
+        "      STAT ah[ARCHIVE_HEADER_SIZE], bh[BLOCK_HEADER_SIZE];\n"
+        "      if (file_read (fin, ah, sizeof(ah)) == sizeof(ah)  &&  ah[0]==BULAT_ZIGANSHIN_SIGNATURE  &&  ah[1]==SREP_SIGNATURE)\n"
+        "      {\n"
+        "        file_seek (fin, sizeof(ah) + ((ah[2]>>16) & 255));\n"
+        "        if (file_read (fin, bh, sizeof(bh)) == sizeof(bh)  &&  bh[1] > bufsize  &&  bh[1] <= 1*gb)\n"
+        "          bufsize = bh[1];\n"
+        "      }\n"
+        "      file_seek (fin, 0);\n"
+        "    }\n"
+        "    unsigned compbufsize = bufsize + sizeof(STAT)*(MAX_HEADER_SIZE+MAX_HASH_SIZE+FUTURELZ_MAX_STATS_PER_BLOCK(bufsize));\n    char *buf     = srep_own_array (new char[compbufsize]);",
+        marker="the archive does not record -b",
+    )
+    ok &= apply(
+        srep,
+        "decode: which -b to use",
+        "error (ERROR_COMPRESSION, \"Decompression problem: uncompressed block size is %u bytes, while maximum supported size is %u bytes\", origsize1, bufsize);",
+        "error (ERROR_COMPRESSION, \"Decompression problem: uncompressed block size is %u bytes, while maximum supported size is %u bytes\\n  (the archive was made with -b%umb or so: decode with that -b)\", origsize1, bufsize, (origsize1+mb-1)/mb);   // ytool patch: say which",
+        marker="ytool patch: say which",
+    )
+
+    # --- 43. -m3 with a block size that is not a multiple of L ---------------
+    # Origin: the 3.98 suite (-m3 -b100000b, -b65537b). -m3 precomputes the
+    # digests of L-byte chunks at absolute positions; a block that is not a
+    # multiple of L splits a chunk, and the archive fails its checksums
+    # ("checksum of decompressed data is not the same"). Upstream bug, with or
+    # without -d. The block is rounded down to a multiple of L (-b8mb and every
+    # power of 2 from L up are already multiples).
+    ok &= apply(
+        srep,
+        "-m3: block size a multiple of L",
+        "  if (ROUND_MATCHES  &&  (L % BASE_LEN != 0  ||  bufsize % L != 0))",
+        "  if (PRECOMPUTE_DIGESTS  &&  bufsize % L != 0)   // ytool patch: a block must hold whole chunks\n"
+        "    bufsize = mymax (bufsize / L * L, L);\n"
+        "  if (ROUND_MATCHES  &&  (L % BASE_LEN != 0  ||  bufsize % L != 0))",
+        marker="a block must hold whole chunks",
+    )
+
     # --- 14. Version ------------------------------------------------------------
     ok &= apply(
         srep,
-        "version: SREP 3.97",
+        "version: SREP 3.98",
         'char *program_version     = "SREP 3.93a beta", *program_date = "October 11, 2014";',
-        'char *program_version     = "SREP 3.97 (3.93a + ytool fixes)", *program_date = "November 26, 2026";',
-        marker="SREP 3.97",
+        'char *program_version     = "SREP 3.98 (3.93a + ytool fixes)", *program_date = "November 27, 2026";',
+        marker="SREP 3.98",
     )
 
     return 0 if ok else 1

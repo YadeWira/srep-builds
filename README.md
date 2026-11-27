@@ -1,7 +1,7 @@
 # srep-builds
 
 Personal builds of **SREP**, the huge-dictionary LZ77 preprocessor by **Bulat
-Ziganshin**: version **3.97**, which is SREP 3.93a beta (October 11, 2014) with
+Ziganshin**: version **3.98**, which is SREP 3.93a beta (October 11, 2014) with
 fixes, more platforms and a newer command line. The archive format is unchanged.
 Built for [ytool](https://github.com/YadeWira/ytool), which runs srep as an
 external program for `-dd1`..`-dd5`.
@@ -77,6 +77,13 @@ reading stdin need `-s<size>`: without it srep assumes 25 GB and asks for more
 memory than a 32-bit process has.
 
 ## What changed since 3.93a
+
+**3.98**
+- Option combinations that wrote archives srep could not decode (`-m3 -l256 -c16`,
+  `-l100`, `-m1f -l1000 -c256`, `-m3 -b100000b`) now give correct archives; `-index=F`
+  works with every method; odd `-l`/`-a`/`-b` values no longer crash.
+- Archives made with `-b` above 8 MB decode without repeating `-b`.
+- libsrep frees what each call allocates: many calls in one process keep a flat RSS.
 
 **3.97**
 - **libsrep**: srep as a library (`srep_run`, `build/lib/srep_lib.h`), the program's
