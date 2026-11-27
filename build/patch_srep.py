@@ -686,13 +686,329 @@ bool crc32c()  /* arm64 CRC instructions: optional in ARMv8.0, always on Apple *
         marker="ytool patch: Linux-only; the process time",
     )
 
+    # --- 20. A failed run leaves no output and no temporary files -----------
+    # 3.96, from omega-srep (it removes what it created). error() calls exit()
+    # directly, so only the few errors that went through `goto cleanup` removed
+    # the output: a checksum error, a truncated archive, Ctrl+C or SIGTERM left
+    # a partial output file, the -temp= copy and the -vmfile= spill behind.
+    # Measured on 3.95: a corrupt archive decoded with -temp= left out.bin and
+    # t.tmp. Every file srep creates is registered as it is opened, and error()
+    # (which the signal handler also calls) closes and removes them first.
+    decomp = os.path.join(root, "Compression/SREP/decompress.cpp")
+    io = os.path.join(root, "Compression/SREP/io.cpp")
+    ok &= apply(
+        srep,
+        "partial files: registry",
+        "void error (int ExitCode, char *ErrmsgFormat...);   // Exit on error\n",
+        """void error (int ExitCode, char *ErrmsgFormat...);   // Exit on error
+
+// ytool patch: what srep created, removed if it stops on an error (error() and
+// the signal handler end in exit(), skipping main's cleanup). "-" is never here.
+static FILE *partial_fout = NULL, *partial_ftemp = NULL, *partial_fstat = NULL;
+static const char *partial_out = NULL, *partial_temp = NULL, *partial_index = NULL, *partial_vm = NULL;
+static void remove_partial_files (void)
+{
+  static volatile int done = 0;
+  if (done)  return;
+  done = 1;
+  // closed first: Windows cannot remove an open file
+  if (partial_ftemp)  fclose (partial_ftemp);
+  if (partial_fstat)  fclose (partial_fstat);
+  if (partial_fout)   fclose (partial_fout);
+  if (partial_temp)   remove (partial_temp);
+  if (partial_index)  remove (partial_index);
+  if (partial_out)    remove (partial_out);
+  if (partial_vm)     remove (partial_vm);
+}
+""",
+        marker="static void remove_partial_files",
+    )
+    ok &= apply(
+        io,
+        "partial files: removed by error()",
+        """  va_end(argp);
+
+  exit(ExitCode);""",
+        """  va_end(argp);
+
+  remove_partial_files();   // ytool patch: no partial output after an error
+  exit(ExitCode);""",
+        marker="remove_partial_files();   // ytool patch",
+    )
+    ok &= apply(
+        decomp,
+        "partial files: the -vmfile= spill",
+        """    if (!vmfile)   vmfile = fopen(vmfile_name, "w+b");""",
+        """    if (!vmfile)  {vmfile = fopen(vmfile_name, "w+b");  partial_vm = vmfile_name;   // ytool patch: removed on error
+                   if (!vmfile)  error (ERROR_IO, "Can't open %s for write", vmfile_name);}""",
+        marker="partial_vm = vmfile_name;",
+    )
+    ok &= apply(
+        srep,
+        "partial files: output and index registered",
+        """  FILE *fstat = *index_file? fopen (index_file, cmdmode==COMPRESSION? "wb" : "rb") : (cmdmode==COMPRESSION? fout : fin);""",
+        """  // ytool patch: registered for remove_partial_files(); the null device is not
+  if (fout != stdout && !strequ (foutname, NULL_FILENAME))  partial_fout = fout,  partial_out = foutname;
+  FILE *fstat = *index_file? fopen (index_file, cmdmode==COMPRESSION? "wb" : "rb") : (cmdmode==COMPRESSION? fout : fin);
+  if (*index_file && cmdmode==COMPRESSION && fstat)  partial_fstat = fstat,  partial_index = index_file;""",
+        marker="registered for remove_partial_files()",
+    )
+    src = read(srep)
+    n = src.count("""    if (ftemp == NULL)  error (ERROR_IO, "Can't open tempfile %s for write", tempfile);""")
+    if "partial_ftemp = ftemp" in src:
+        print("   = partial files: temp copies: already applied")
+    elif n == 2:
+        src = src.replace("""    if (ftemp == NULL)  error (ERROR_IO, "Can't open tempfile %s for write", tempfile);""",
+                          """    if (ftemp == NULL)  error (ERROR_IO, "Can't open tempfile %s for write", tempfile);
+    if (tempfile && *tempfile)  partial_ftemp = ftemp,  partial_temp = tempfile;   // ytool patch""")
+        write(srep, src)
+        print("   + partial files: temp copies")
+    else:
+        print(f"   ! partial files: temp copies: {n} sites, expected 2")
+        ok = False
+    # main's own cleanup closes and removes them; nothing is left to do twice
+    ok &= apply(
+        srep,
+        "partial files: cleared by main's cleanup",
+        """cleanup:
+  clear_window_title();""",
+        """cleanup:
+  partial_fout = partial_ftemp = partial_fstat = NULL;   // ytool patch: main closes them below
+  partial_out = partial_temp = partial_index = partial_vm = NULL;
+  clear_window_title();""",
+        marker="main closes them below",
+    )
+
+    # --- 21. Default temporary files named per process ------------------------
+    # 3.96. srep-data.tmp (stdin copy when compressing, stdout copy when
+    # decoding) and srep-virtual-memory.tmp (decode spill) had fixed names in
+    # the current folder: two srep runs there shared them. ytool hit the same
+    # bug in its own temporaries. The process ID goes in the name; -temp= and
+    # -vmfile= still name them exactly.
+    ok &= apply(
+        srep,
+        "temp names: per process",
+        """  char *index_file="",  *tempfile=NULL,  *DEFAULT_TEMPFILE="srep-data.tmp",  *vmfile_name="srep-virtual-memory.tmp",  *option_s="+";""",
+        """  // ytool patch: the default temporary names carry the process ID
+  static char default_temp_buf[64], default_vm_buf[64];
+  snprintf (default_temp_buf, sizeof(default_temp_buf), "srep-data-%u.tmp", unsigned(srep_getpid()));
+  snprintf (default_vm_buf,   sizeof(default_vm_buf),   "srep-virtual-memory-%u.tmp", unsigned(srep_getpid()));
+  char *index_file="",  *tempfile=NULL,  *DEFAULT_TEMPFILE=default_temp_buf,  *vmfile_name=default_vm_buf,  *option_s="+";""",
+        marker="default_temp_buf",
+    )
+    ok &= apply(
+        srep,
+        "temp names: getpid",
+        "#include \"Common.h\"\n",
+        """#include "Common.h"
+#ifdef _WIN32   // ytool patch: srep_getpid for per-process temporary names
+#include <process.h>
+#define srep_getpid _getpid
+#else
+#include <unistd.h>
+#define srep_getpid getpid
+#endif
+""",
+        marker="#define srep_getpid",
+    )
+
+    # --- 22..23. --verify and --seed= ------------------------------------------
+    # 3.96, from omega-srep. --verify decodes and checks every checksum without
+    # writing anything (output to the null device; when the decoder must reread
+    # its output, the same temporary copy as decoding to stdout). --seed=<hex>
+    # is SREP_SEED_HEX (patch 5) on the command line; a seed of the wrong length
+    # is an error instead of being ignored.
+    ok &= apply(
+        srep,
+        "--verify, --seed=: options",
+        """    if (strequ(argv[1],"--recompress")) {
+      allow_recompress = true;  argv++;  continue;
+    }""",
+        """    if (strequ(argv[1],"--recompress")) {
+      allow_recompress = true;  argv++;  continue;
+    }
+    if (strequ(argv[1],"--verify")) {   // ytool patch: --verify, --seed=
+      verify = true;  cmdmode = DECOMPRESSION;  argv++;  continue;
+    }
+    if (start_with(argv[1],"--seed=")) {
+      const char *hex = argv[1]+7;
+      size_t n = strlen(hex);
+      bool good = n>0 && n%2==0;
+      for (size_t i=0; good && i<n; i++)
+        good = (hex[i]>='0' && hex[i]<='9') || (hex[i]>='a' && hex[i]<='f') || (hex[i]>='A' && hex[i]<='F');
+      if (!good)  error (ERROR_CMDLINE, "--seed= takes hex digits, an even number of them (64 for -hash=vmac): %s", hex);
+      static char seed_env[600];
+      if (n > sizeof(seed_env)-20)  error (ERROR_CMDLINE, "--seed= is too long");
+      snprintf (seed_env, sizeof(seed_env), "SREP_SEED_HEX=%s", hex);
+      putenv (seed_env);
+      argv++;  continue;
+    }""",
+        marker="ytool patch: --verify, --seed=",
+    )
+    ok &= apply(
+        srep,
+        "--verify: flag",
+        "  bool show_help = false, allow_recompress = false;   // ytool patch: modern CLI",
+        "  bool show_help = false, allow_recompress = false, verify = false;   // ytool patch: modern CLI, --verify",
+        marker="verify = false;",
+    )
+    ok &= apply(
+        srep,
+        "--verify: no output",
+        "  char *foutname = (cmdmode==INFORMATION? (char*)NULL_FILENAME : filenames[2]);",
+        """  if (verify && filenames[2])   // ytool patch: --verify writes nothing
+    error (ERROR_CMDLINE, "--verify takes one file name, the archive: %s", filenames[2]);
+  char *foutname = (cmdmode==INFORMATION || verify? (char*)NULL_FILENAME : filenames[2]);""",
+        marker="--verify writes nothing",
+    )
+    ok &= apply(
+        srep,
+        "--verify: reread through a temporary copy",
+        """    if ((IO_LZ || maximum_save!=unsigned(-1))  &&  strequ(foutname,"-"))""",
+        """    if ((IO_LZ || maximum_save!=unsigned(-1))  &&  (strequ(foutname,"-") || verify))   // ytool patch: + --verify""",
+        marker="+ --verify",
+    )
+    ok &= apply(
+        srep,
+        "--verify: says so",
+        """  if (warnings==0 && delete_input_files && !strequ(finame,"-"))""",
+        """  if (verify)   // ytool patch
+    fprintf (stderr, "Verified: %s decompresses and its checksums match\\n", finame);
+  if (warnings==0 && delete_input_files && !strequ(finame,"-"))""",
+        marker="decompresses and its checksums match",
+    )
+    ok &= apply(
+        hashes,
+        "--seed=: wrong length is an error",
+        """  const char *env_seed = getenv("SREP_SEED_HEX");
+  if (!initialized && env_seed && strlen(env_seed) == 2*size)""",
+        """  const char *env_seed = getenv("SREP_SEED_HEX");
+  if (!initialized && env_seed && *env_seed && strlen(env_seed) != 2*size)   // ytool patch (3.96): not ignored
+    error (ERROR_CMDLINE, "the seed (--seed= or SREP_SEED_HEX) must be %d hex digits for this hash", int(2*size));
+  if (!initialized && env_seed && strlen(env_seed) == 2*size)""",
+        marker="must be %d hex digits for this hash",
+    )
+
+    # --- 24. Input and output are the same file, under different names --------
+    # 3.96, from omega-srep. Only identical spellings were refused: srep a ./a
+    # (or a hard link, or another case on Windows) truncated the input before
+    # reading it. Compared by device and inode (volume serial and file index on
+    # Windows), before the output is opened. The index file too.
+    ok &= apply(
+        srep,
+        "same file: helper",
+        "static void remove_partial_files (void)\n{",
+        """// ytool patch: true if both names are one existing file
+#ifdef _WIN32
+#include <windows.h>
+static bool same_file (const char *a, const char *b)
+{
+  HANDLE ha = CreateFileA (a, 0, FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+  if (ha == INVALID_HANDLE_VALUE)  return false;
+  HANDLE hb = CreateFileA (b, 0, FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+  if (hb == INVALID_HANDLE_VALUE)  {CloseHandle (ha);  return false;}
+  BY_HANDLE_FILE_INFORMATION ia, ib;
+  bool same = GetFileInformationByHandle (ha, &ia) && GetFileInformationByHandle (hb, &ib)
+           && ia.dwVolumeSerialNumber==ib.dwVolumeSerialNumber
+           && ia.nFileIndexHigh==ib.nFileIndexHigh && ia.nFileIndexLow==ib.nFileIndexLow;
+  CloseHandle (ha);  CloseHandle (hb);
+  return same;
+}
+#else
+#include <sys/stat.h>
+static bool same_file (const char *a, const char *b)
+{
+  struct stat sa, sb;
+  return stat (a, &sa)==0 && stat (b, &sb)==0 && sa.st_dev==sb.st_dev && sa.st_ino==sb.st_ino;
+}
+#endif
+
+static void remove_partial_files (void)
+{""",
+        marker="static bool same_file",
+    )
+    ok &= apply(
+        srep,
+        "same file: checked",
+        """  if (!strequ(finame,"-") && strequ(finame,foutname))
+    error (ERROR_IO, "Input and output files should have different names");
+""",
+        """  if (!strequ(finame,"-") && strequ(finame,foutname))
+    error (ERROR_IO, "Input and output files should have different names");
+  // ytool patch: the same file under another name (./a, a link) was truncated
+  if (!strequ(finame,"-") && !strequ(foutname,"-") && same_file (finame, foutname))
+    error (ERROR_IO, "%s and %s are the same file", finame, foutname);
+  if (*index_file && ((!strequ(finame,"-") && same_file (index_file, finame)) || (!strequ(foutname,"-") && same_file (index_file, foutname))))
+    error (ERROR_IO, "the index file %s is the input or the output", index_file);
+""",
+        marker="the same file under another name",
+    )
+
+    # --- 25. The input changed while it was being compressed ------------------
+    # 3.96, from omega-srep. srep reads a file input more than once (-m4/-m5
+    # reread it, future-LZ reads it twice); a file that grew or was rewritten
+    # meanwhile gave an archive of a mix of both, with exit 0. Size and
+    # modification time are compared before and after; a change is an error and
+    # the archive is removed.
+    ok &= apply(
+        srep,
+        "input changed: before",
+        """  FILE *fin = strequ (finame, "-")? stdin : fopen (finame, "rb");""",
+        """  // ytool patch: the input's size and time, compared when compression ends
+#ifdef _WIN32
+  struct _stati64 input_before;  bool have_input_before = cmdmode==COMPRESSION && !strequ(finame,"-") && _stati64 (finame, &input_before)==0;
+#else
+  struct stat input_before;      bool have_input_before = cmdmode==COMPRESSION && !strequ(finame,"-") && stat (finame, &input_before)==0;
+#endif
+  FILE *fin = strequ (finame, "-")? stdin : fopen (finame, "rb");""",
+        marker="compared when compression ends",
+    )
+    ok &= apply(
+        srep,
+        "input changed: after; output close checked",
+        """  fclose(fin);
+  fclose(fout);
+  if (fstat!=fin && fstat!=fout)""",
+        """  fclose(fin);
+  // ytool patch: a failed final flush (disk full, closed pipe) was exit 0
+  if (fclose(fout) != 0  &&  !errcode  &&  cmdmode!=INFORMATION)
+    {fprintf (stderr, "\\n  ERROR! Can't write to output file (disk full or closed pipe?)\\n");  errcode = ERROR_IO;}
+  if (have_input_before && !errcode)
+  {
+#ifdef _WIN32
+    struct _stati64 input_after;  bool got = _stati64 (finame, &input_after)==0;
+#else
+    struct stat input_after;      bool got = stat (finame, &input_after)==0;
+#endif
+    if (!got || input_after.st_size!=input_before.st_size || input_after.st_mtime!=input_before.st_mtime)
+      {fprintf (stderr, "\\n  ERROR! %s changed while it was being compressed\\n", finame);  errcode = ERROR_IO;}
+  }
+  if (fstat!=fin && fstat!=fout)""",
+        marker="a failed final flush",
+    )
+
+    # --- 26. A closed pipe is an error, not a signal ----------------------------
+    # 3.96. Writing to a pipe whose reader has gone killed srep with SIGPIPE
+    # (exit 141, no message) and left its temporary files. Ignored, the write
+    # fails and srep stops with its I/O error, exit 3, cleaned up.
+    ok &= apply(
+        srep,
+        "SIGPIPE ignored",
+        """  setbuf(stderr,NULL);    // Disable buffering even if stderr is redirected to file/pipe""",
+        """  setbuf(stderr,NULL);    // Disable buffering even if stderr is redirected to file/pipe
+#ifdef SIGPIPE
+  signal (SIGPIPE, SIG_IGN);   // ytool patch: a closed pipe is a write error (exit 3)
+#endif""",
+        marker="a closed pipe is a write error",
+    )
+
     # --- 14. Version ------------------------------------------------------------
     ok &= apply(
         srep,
-        "version: SREP 3.95",
+        "version: SREP 3.96",
         'char *program_version     = "SREP 3.93a beta", *program_date = "October 11, 2014";',
-        'char *program_version     = "SREP 3.95 (3.93a + ytool fixes)", *program_date = "November 26, 2026";',
-        marker="SREP 3.95",
+        'char *program_version     = "SREP 3.96 (3.93a + ytool fixes)", *program_date = "November 26, 2026";',
+        marker="SREP 3.96",
     )
 
     return 0 if ok else 1

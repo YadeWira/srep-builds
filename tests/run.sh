@@ -72,7 +72,7 @@ for m in 1 2 3 4 5; do for f in $FILES; do
     && $S64 -d - - < p.s > p.out 2>/dev/null ) && cmp -s "$W/$f" "$W/p.out" && ok \
     || bad "pipe -m${m}f $f"
 done; done
-[ -e "$W/srep-data.tmp" ] && bad "pipe encode left srep-data.tmp in the working directory"
+compgen -G "$W/srep-data*.tmp" >/dev/null && bad "pipe encode left srep-data*.tmp in the working directory"
 
 echo "== hashes"
 for h in vmac md5 sha1 sha512 siphash; do rt "$S64" "$S64" "-m3f -hash=$h" dups12m.bin; done
@@ -104,6 +104,63 @@ for g in g_flip g_cut; do
   $S64 -d - - < "$W/$g.s" > /dev/null 2>&1 && bad "$g (pipe): decode exit 0" || ok
 done
 
+echo "== a failed run leaves nothing behind (patches 20, 21, 26)"
+# decode errors went through exit() and left the output and -temp= behind
+rm -f "$W/left.out" "$W/left.tmp"
+$S64 -d "$W/g_flip.s" "$W/left.out" >/dev/null 2>&1
+[ -e "$W/left.out" ] && bad "a failed decode left its output" || ok
+$S64 -d -temp="$W/left.tmp" - "$W/left.out" < "$W/g_flip.s" >/dev/null 2>&1
+[ -e "$W/left.out" ] || [ -e "$W/left.tmp" ] && bad "a failed pipe decode left output or -temp=" || ok
+$S64 -d -vmfile="$W/left.vm" -vmblock=1mb -mem1mb "$W/g_flip.s" "$W/left.out" >/dev/null 2>&1
+[ -e "$W/left.vm" ] && bad "a failed decode left its -vmfile=" || ok
+# SIGTERM in the middle of a decode
+for i in 1 2 3 4 5 6 7 8; do cat "$W/dups12m.bin"; done > "$W/big96.bin"
+$S64 -m3f "$W/big96.bin" "$W/big96.s" >/dev/null 2>&1
+$S64 -d -temp="$W/kill.tmp" - "$W/kill.out" < "$W/big96.s" >/dev/null 2>&1 & kp=$!
+for i in $(seq 50); do [ -e "$W/kill.tmp" ] && break; sleep 0.02; done
+kill -TERM $kp 2>/dev/null; wait $kp 2>/dev/null
+[ -e "$W/kill.out" ] || [ -e "$W/kill.tmp" ] && bad "SIGTERM left the output or -temp=" || ok
+# a reader that goes away: exit 3 with a message, not SIGPIPE
+$S64 -m3f "$W/big96.bin" - 2>/dev/null | head -c 100 >/dev/null; rc=${PIPESTATUS[0]}
+[ "$rc" = 3 ] && ok || bad "closed pipe: exit $rc, wanted 3"
+# default temporary names carry the process id: two pipe encodes at once in one folder
+( cd "$W" && $S64 -m5f - - < big96.bin > c1.s 2>/dev/null & cd "$W" && $S64 -m5f - - < dups12m.bin > c2.s 2>/dev/null; wait )
+( cd "$W" && $S64 -d - - < c1.s > c1.out 2>/dev/null && $S64 -d - - < c2.s > c2.out 2>/dev/null ) \
+  && cmp -s "$W/big96.bin" "$W/c1.out" && cmp -s "$W/dups12m.bin" "$W/c2.out" && ok || bad "two pipe encodes in one folder"
+
+echo "== --verify, --seed= (patches 22, 23)"
+for m in -m1f -m3 -m3f -m4f -m5 -m5f -m3o; do
+  $S64 $m "$W/dups12m.bin" "$W/vf.s" >/dev/null 2>&1
+  $S64 --verify "$W/vf.s" >/dev/null 2>&1 && ok || bad "--verify $m: exit $?"
+done
+$S64 --verify "$W/g_flip.s" >/dev/null 2>&1 && bad "--verify accepted a damaged archive" || ok
+$S64 --verify "$W/g_cut.s" >/dev/null 2>&1 && bad "--verify accepted a cut archive" || ok
+$S64 --verify "$W/g.s" "$W/x.out" >/dev/null 2>&1 && bad "--verify with an output name accepted" || ok
+$S64 -m3f --seed=$SEED "$W/dups12m.bin" "$W/sd1.s" >/dev/null 2>&1
+SREP_SEED_HEX=$SEED $S64 -m3f "$W/dups12m.bin" "$W/sd2.s" >/dev/null 2>&1
+cmp -s "$W/sd1.s" "$W/sd2.s" && ok || bad "--seed= differs from SREP_SEED_HEX"
+$S64 -m3f --seed=abc "$W/one.bin" "$W/sd3.s" >/dev/null 2>&1 && bad "--seed=abc accepted" || ok
+$S64 -m3f --seed=abcd "$W/dups12m.bin" "$W/sd3.s" >/dev/null 2>&1 && bad "a 2-byte seed accepted for vmac" || ok
+[ -e "$W/sd3.s" ] && bad "a rejected seed left an archive" || ok
+
+echo "== same file, changed input (patches 24, 25)"
+cp "$W/dups12m.bin" "$W/same.bin"; ln -f "$W/same.bin" "$W/same-link.bin"
+( cd "$W" && $S64 -m3f same.bin ./same.bin >/dev/null 2>&1 ) && bad "./same.bin accepted as the output of same.bin" || ok
+$S64 -m3f "$W/same.bin" "$W/same-link.bin" >/dev/null 2>&1 && bad "a hard link accepted as the output" || ok
+cmp -s "$W/same.bin" "$W/dups12m.bin" && ok || bad "the input was damaged by a same-file run"
+for i in 1 2 3 4; do cat "$W/big96.bin"; done > "$W/chg.bin"   # big enough to still be running
+$S64 -m5f "$W/chg.bin" "$W/chg.s" >/dev/null 2>&1 & cp=$!
+# the output exists once srep has measured the input; paused there, the input
+# changes under it, whatever the machine's speed
+for i in $(seq 500); do [ -e "$W/chg.s" ] && break; sleep 0.01; done
+kill -STOP $cp 2>/dev/null
+printf 'XXXX' | dd of="$W/chg.bin" bs=1 seek=1000 conv=notrunc 2>/dev/null
+python3 -c 'import os,sys,time; t=time.time()+60; os.utime(sys.argv[1],(t,t))' "$W/chg.bin"   # another mtime even on a coarse clock
+kill -CONT $cp 2>/dev/null
+wait $cp; rc=$?; rm -f "$W/chg.bin"
+if [ "$rc" = 0 ]; then echo "   (changed input: srep finished before the change, not checked)"
+else [ -e "$W/chg.s" ] && bad "changed input: archive left behind" || ok; fi
+
 echo "== options (patches 9, 12, 13)"
 $S64 -d -vmfile="$W/vm.tmp" -vmblock=1mb "$W/g.s" "$W/v.out" >/dev/null 2>&1 \
   && cmp -s "$W/dups12m.bin" "$W/v.out" && ok || bad "-vmfile=/-vmblock= not accepted"
@@ -113,7 +170,7 @@ $S64 -m3f -hash= "$W/one.bin" "$W/h.s" >/dev/null 2>&1 && bad "-hash= (empty) ac
 # wrong meaning. -s1.5 is still an interval.
 $S64 -m3f -s1e6 "$W/random1m.bin" "$W/s.s" >/dev/null 2>&1 && bad "-s1e6 accepted as an interval" || ok
 $S64 -m3f -s1.5 "$W/random1m.bin" "$W/s.s" >/dev/null 2>&1 && ok || bad "-s1.5 (interval) rejected"
-banner="$($S64 --version 2>&1)"; [[ "$banner" == "SREP 3.95"* ]] && ok || bad "version string"
+banner="$($S64 --version 2>&1)"; [[ "$banner" == "SREP 3.96"* ]] && ok || bad "version string"
 
 echo "== command line (patch 18)"
 $S64 --help 2>&1 | grep -q "Exit codes" && ok || bad "--help"
