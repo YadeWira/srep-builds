@@ -1,7 +1,7 @@
 # srep-builds
 
 Personal builds of **SREP**, the huge-dictionary LZ77 preprocessor by **Bulat
-Ziganshin**: version **3.95**, which is SREP 3.93a beta (October 11, 2014) with
+Ziganshin**: version **3.96**, which is SREP 3.93a beta (October 11, 2014) with
 fixes, more platforms and a newer command line. The archive format is unchanged.
 Built for [ytool](https://github.com/YadeWira/ytool), which runs srep as an
 external program for `-dd1`..`-dd5`.
@@ -77,6 +77,15 @@ memory than a 32-bit process has.
 
 ## What changed since 3.93a
 
+**3.96**
+- A failed run (an error, Ctrl+C, SIGTERM) leaves no output or temporary files.
+- Damaged archives always fail: fuzzing the decoder found two crashes, a damaged
+  block header decoding to a short file with exit 0, and a damaged hash number
+  turning the checksums off. 100,000 mutated archives after the fixes: none.
+- `--verify` (decode and check, write nothing) and `--seed=HEX`.
+- The same file under another name is refused as the output; an input that
+  changes during compression is an error; a closed pipe is exit 3.
+
 **3.95**
 - Builds for Linux arm64, macOS arm64 and Windows XP (x86).
 - arm64: VMAC took arm64 for big-endian, so `-hash=vmac` (the default) archives
@@ -134,7 +143,8 @@ many threads; the same seed giving the same archive; damaged and truncated
 archives failing with a non-zero exit; the option and command-line fixes; the
 32-bit, arm64 and Windows builds against the 64-bit one, both ways; the XP
 import table; golden archives from Linux x86-64; and a probe build that holds the
-digest race open. 256 checks with every build present.
+digest race open; damaged headers and a short fuzz pass (`build/fuzz.py`). 288 checks
+with every build present.
 
 [ciBadge]: https://github.com/YadeWira/srep-builds/actions/workflows/ci.yml/badge.svg "Continuous Integration"
 [ciLink]: https://github.com/YadeWira/srep-builds/actions/workflows/ci.yml

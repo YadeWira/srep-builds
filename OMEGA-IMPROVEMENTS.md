@@ -43,7 +43,7 @@ repeated next to the patch so it survives without network access to that repo.
 | Change | Why not |
 |---|---|
 | `-dup` mode (a second dedup layer with its own `ODUP` trailer) | A feature, not a fix. `ytool` already has dedup (`-dd`, `-dd<N>`), and this would be a second, incompatible one inside the same stream. |
-| `--chunk-hash=gear`, `--seed=N`, `-bar`, `--verify`, `-i` | New options on the srep CLI. `ytool` drives srep through a fixed invocation it controls; adding CLI surface here would be dead weight unless `ytool` used it. (`-bar` exists in `ytool` itself, for `ytool`'s own progress.) |
+| `--chunk-hash=gear`, `-bar` | New options with no use here (`-bar` exists in `ytool` itself). `--seed=`, `--verify` and the removal of partial files were taken in 3.96 (patches 20-23); `-i` was already srep's. |
 | v5/v6/v7 formats, `OSR6`/`OSR7` magic, `.osr` extension | **A format break by design**, declared as such. Adopting it would make every existing `.pmp` unreadable — the same one-way break the omega-srep detour already cost once. |
 | The Rust and Pascal rewrites | Different products with a clean-room spec. Nothing here needs them, and vendoring a rewrite would mean vendoring a second implementation of the same thing. |
 | LTO/PGO build flags (`-flto`, PGO profiles) | Build-host tuning, not source. Could be adopted separately for speed; not attempted here because PGO needs a training corpus and a repeatable profile per target. |

@@ -1,5 +1,29 @@
 # Changelog
 
+## 3.96 — 2026-11-26
+
+Same archive format as 3.93a, 3.94 and 3.95.
+
+- A failed run leaves nothing behind: the output, the `-temp=` copy, the index and
+  the `-vmfile=` spill are removed on every error, Ctrl+C and SIGTERM (most
+  errors exited before the cleanup and left them).
+- Damaged archives always fail, found by fuzzing the decoder (100,000 mutated
+  archives under ASan/UBSan, `build/fuzz.py`): a crash on a 0-length match, a
+  division by zero on a v1 header, a damaged block header decoding to a short or
+  empty file with exit 0, and a damaged hash number turning the checksums off with
+  exit 0. After the fixes, 100,000 cases: no crash, hang or silent pass.
+- `--verify`: decodes and checks every checksum, writing nothing.
+- `--seed=HEX`: `SREP_SEED_HEX` on the command line. A seed shorter than the hash's
+  key is an error (it was ignored); a longer one gives its first bytes, so 64 digits
+  seed every hash.
+- The same file under another name (`./a`, a hard link, other case on Windows) is
+  refused as the output instead of being truncated; an input that changes while it
+  is being compressed is an error.
+- A closed pipe is exit 3 with a message (it was SIGPIPE); a failed final flush is an
+  error; default temporary files carry the process ID, so two runs in one folder no
+  longer share them.
+- `tests/run.sh`: 288 checks, including a short fuzz pass.
+
 ## 3.95 — 2026-11-26
 
 Same archive format as 3.93a and 3.94.

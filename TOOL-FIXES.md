@@ -144,6 +144,43 @@ with examples and exit codes), a hint after "Invalid option", and refuses to
 compress a file that starts with srep's signature unless `--recompress` is given.
 It changes no existing option.
 
+## 9. A failed run left its files behind (3.96)
+
+`error()` calls `exit()` directly, so only the errors that went through `goto cleanup`
+removed the output. A corrupt archive decoded with `-temp=t.tmp` left the partial
+output and `t.tmp`; Ctrl+C and SIGTERM (whose handler calls `error()`) too. Patch 20
+registers every file srep creates as it opens it, and `error()` closes and removes
+them first. Checked: a checksum error, a cut archive, SIGTERM mid-decode, a decode
+spill. Patch 21 names the default temporaries per process (`srep-data-<pid>.tmp`),
+since two runs in one folder shared one.
+
+## 10. What fuzzing the decoder found (3.96)
+
+`build/fuzz.py` mutates archives of every method (bit flips, header words, cuts,
+inserted and duplicated bytes, zeroed runs), decodes them through files and pipes
+under ASan/UBSan, and reports crashes, hangs, exit 0 with wrong output, and files
+left behind. 20,000 cases on 3.95 found:
+
+| Finding | Cause | Patch 27 |
+|---|---|---|
+| `fseek(NULL)` in `restore_from_disk` | A match of length 0 is the decoder's own "block on disk" mark; with no spill file open, it read through NULL | a 0-length match is bad data |
+| null chunk in `MEMORY_MANAGER::save` | the same 0-length match: 0 bytes saved, then an invalid chunk written | same |
+| division by zero | format v1 rounds lengths to the minimum match, and a header said 0 | refused |
+| exit 0, empty output (`-m5`) | two zero words read as the end of the archive anywhere | the end must be where the index or the file ends |
+| exit 0 without checking | a damaged hash number: "can't be checked" on stderr, then decoded | an error; `-hash-` to decode without checking |
+
+After the fixes, 100,000 cases: no finding. `tests/run.sh` reproduces the header
+cases and runs 600 fuzz cases on the build under test.
+
+## 11. Speed (3.96: measured, not changed)
+
+On 1 GB of mixed files (warm cache): `-m1f` 0.8 s, `-m3f` 2.3 s, `-m5f` 3.3 s, decode
+0.4 s. `-t` changes neither the time nor the bytes for these methods: the main loop
+is sequential. A callgrind profile of `-m3f` puts 70% in that loop (rolling hash,
+hash table, match extension) and 20% in VMAC. LTO changed nothing measurable.
+Parallelizing the rolling hash and VMAC per block could save perhaps a third of the
+CPU time, but at these speeds the disk is usually the limit, so it was left out.
+
 ## Limitation that remains, and is not fixable from here
 
 `-m1`, `-m2` and the other suffixes-less methods write an **index-LZ** footer (format
